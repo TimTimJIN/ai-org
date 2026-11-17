@@ -1,8 +1,8 @@
 """Seed this conversation's explicit direction, observed state and proposals once."""
-from pathlib import Path
 from knowledge import add, export, records
+from data_root import data_root
 
-root = Path(__file__).parent / 'data' / 'knowledge'
+root = data_root() / 'data' / 'knowledge'
 base = dict(case='autonomous-team', source='2026-11-16 本チャット', author='Codex')
 items = [
  dict(id='user-direction', kind='direction', author='user (要約)', title='自律型AIチームの目的', body='ChatGPT・Claudeの双方が司令塔とPC作業を担当できるようにする。AI同士で方針・成果物を改善する。追加のモデルAPI課金を避け、既存会話の資産を活用する。将来はdots・muse等を追加し、AI自身から目的も提案する。Obsidian・Notion・Google Driveに知識を蓄積したい。'),

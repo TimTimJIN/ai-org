@@ -33,4 +33,5 @@ def verify(folder):
             'note': 'Content verified; author identity requires the observed Claude session'}
 
 if __name__ == '__main__':
-    print(json.dumps(verify(Path(__file__).parent / 'work-test'), ensure_ascii=False, indent=2))
+    from data_root import data_root
+    print(json.dumps(verify(data_root() / 'work-test'), ensure_ascii=False, indent=2))

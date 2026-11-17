@@ -8,9 +8,10 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 from core import Relay, Journal, RelayError, validate
 from native import Native, Demo
+from data_root import data_root
 
 ROOT = Path(__file__).resolve().parent
-DATA = Path(os.environ.get("CHAT_RELAY_DATA", str(ROOT / "data")))
+DATA = Path(os.environ.get("CHAT_RELAY_DATA") or (data_root() / "data"))
 DATA.mkdir(parents=True, exist_ok=True)
 
 

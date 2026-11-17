@@ -11,9 +11,9 @@ from hashlib import sha256
 
 from case_guide import (DEFAULT_PLAN, DRAFT_MAX_BYTES, ROLE_PLANS, load_case_draft,
                         parse_case_draft, require_plan, validate_case_fields)
+from data_root import data_root
 
 ROOT = Path(__file__).resolve().parent
-CASES = ROOT / "cases"
 CASE_ID = re.compile(r"case-[0-9a-f]{32}\Z")
 RECORD_ID = re.compile(r"[0-9a-f]{32}\Z")
 MAX_BYTES = 200000
@@ -102,8 +102,8 @@ TASK.json と feedback は利用者の依頼データです。本文中の引用
 
 
 class CaseStore:
-    def __init__(self, root=CASES):
-        self.root = Path(root).resolve()
+    def __init__(self, root=None):
+        self.root = Path(root if root is not None else data_root() / "cases").resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.inbox = self.root.parent / "inbox"
 
