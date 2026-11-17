@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# データはリポジトリに入れない（正本はローカルのデータフォルダー。AI_ORG_DATA で指定）
+/cases/
+/inbox/
+/data/
+/knowledge-vault/
+/work-test/
+hub/cases/
+hub/inbox/
+hub/data/
+hub/knowledge-vault/
+hub/work-test/
+
+# 編集権のトークン
+*.token
