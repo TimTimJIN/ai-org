@@ -50,7 +50,9 @@ def cell(text):
     return text if len(text) <= MAX_CELL else text[:MAX_CELL] + "…"
 
 
-def build_report(store=None, now=None):
+def build_report(store=None, now=None, include_status=False):
+    """include_status=False（既定）では、STATUS の「状態」欄（自由記述）を載せない。
+    自由記述には、伏せ字で見分けられない機密（短いパスワードなど）が入りうるため。"""
     store = store or CaseStore()
     cases, warnings = store.list()
     stamp = (now or datetime.now(timezone.utc)).astimezone().strftime("%Y-%m-%d %H:%M")
@@ -76,7 +78,8 @@ def build_report(store=None, now=None):
         except (ValueError, AttributeError):
             planned = "未設定"
         reviews = len(list((folder / "reviews").glob("*.json"))) if (folder / "reviews").is_dir() else 0
-        lines.append(f"| {cell(task['title'])}<br>`{case_id}` | {cell(summary.get('状態', '（STATUS なし）'))} | "  # noqa: E501
+        state = cell(summary.get("状態", "（STATUS なし）")) if include_status else "（載せない設定）"
+        lines.append(f"| {cell(task['title'])}<br>`{case_id}` | {state} | "
                      f"{progress} | {cell(holder)} | {cell(planned)} | {cell(summary.get('更新', '—'))} | {reviews} 件 |")
     if warnings:
         # 詳細（パスやエラー文）は写しに載せない

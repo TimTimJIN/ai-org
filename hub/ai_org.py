@@ -22,6 +22,8 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     rep = sub.add_parser("report", help="全案件の一覧（人が読む写し）を Markdown で出す")
     rep.add_argument("--out", default=None, help="書き出すファイル。省くと画面に出す")
+    rep.add_argument("--include-status", action="store_true",
+                     help="STATUS の「状態」欄（自由記述）も載せる。機密を書いていないことを確かめてから使う")
     for name in ("start", "status", "pause-ack", "finish", "guard"):
         p = sub.add_parser(name)
         p.add_argument("--case", required=True)
@@ -37,7 +39,7 @@ def main(argv=None):
         try:
             from data_root import data_root
             from report import build_report, write_report
-            text = build_report()
+            text = build_report(include_status=args.include_status)
             if args.out:
                 write_report(text, args.out, data_root())
                 print(f"[ai-org] 案件の一覧を書き出しました：{args.out}")

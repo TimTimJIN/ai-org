@@ -17,7 +17,7 @@ class ReportTests(unittest.TestCase):
             (store.folder(first) / "STATUS.md").write_text("# 作業状況\n\n状態: 進行中\n更新: 2026-11-18\n", encoding="utf-8")
             token = CaseEditing(store, first).acquire("Claude Code test")
             CaseEditing(store, second).request_pause()
-            text = build_report(store)
+            text = build_report(store, include_status=True)
             self.assertIn("案件A", text)
             self.assertIn("進行中", text)
             self.assertIn("Claude Code test", text)
@@ -57,7 +57,7 @@ class ReportSafetyTests(unittest.TestCase):
             case = store.create("鍵", "目的")["id"]
             (store.folder(case) / "STATUS.md").write_text(
                 f"状態: 鍵 sk-ABCDEF1234567890 と {'a1' * 20} を貼った。{case} は残す\n", encoding="utf-8")
-            text = build_report(store)
+            text = build_report(store, include_status=True)
             self.assertNotIn("sk-ABCDEF1234567890", text)
             self.assertNotIn("a1" * 20, text)
             self.assertIn("［伏せ字］", text)
@@ -70,7 +70,7 @@ class ReportSafetyTests(unittest.TestCase):
             bad = store.create("文字化け", "目的")["id"]
             (store.folder(good) / "STATUS.md").write_text("状態: 正常\n", encoding="utf-8")
             (store.folder(bad) / "STATUS.md").write_bytes("状態: 壊れ\n".encode("cp932"))
-            text = build_report(store)
+            text = build_report(store, include_status=True)
             self.assertIn("正常", text)
             self.assertIn("文字化け", text)
 
@@ -79,7 +79,19 @@ class ReportSafetyTests(unittest.TestCase):
             store = CaseStore(Path(temp) / "cases")
             case = store.create("長い", "目的")["id"]
             (store.folder(case) / "STATUS.md").write_text("状態: " + "あ" * 1000 + "\n", encoding="utf-8")
-            self.assertNotIn("あ" * 300, build_report(store))
+            self.assertNotIn("あ" * 300, build_report(store, include_status=True))
+
+
+class ReportDefaultTests(unittest.TestCase):
+    def test_status_text_is_left_out_by_default(self):
+        with TemporaryDirectory() as temp:
+        
+            store = CaseStore(Path(temp) / "cases")
+            case = store.create("既定", "目的")["id"]
+            (store.folder(case) / "STATUS.md").write_text("状態: パスワードは Example!42\n", encoding="utf-8")
+            text = build_report(store)
+            self.assertNotIn("Example!42", text)
+            self.assertIn("既定", text)
 
 
 if __name__ == "__main__":
