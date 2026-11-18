@@ -40,7 +40,9 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 基盤の手順（work-state → claim → confirm-direction → 作業 → STATUS 更新 → release）を1つずつのコマンドにした。
 本人確認はトークンファイルで行う。トークンファイルは会話ごとに別の場所に置き、作業中だけ保持し、中身を表示・転記しない。
 
-| いつ | コマンド（使う版の `hub/` で `python ai_org.py …`） |
+データフォルダーは `AI_ORG_DATA`、なければ利用者の設定（`%USERPROFILE%\.ai-org\config.json` の `data`）で決まる。どちらもなければ、データフォルダーの中継（`python <データフォルダー>\ai_org.py …`、案件フォルダーからは `python ../../ai_org.py …`）を使う。
+
+| いつ | コマンド（`python ai_org.py …`） |
 | --- | --- |
 | 作業の前 | `start --case <案件ID> --agent "<担当とセッション名>" [--token-file <パス>]`：停止中・他の会話が保持中なら止まる。claim し、再開済みの案件なら方針確認を記録し、方針を表示する |
 | 途中 | `status --case <案件ID> [--token-file <パス>]` |
@@ -61,9 +63,13 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
  "status_files": ["STATUS.md"], "check": ["powershell", "-NoProfile", "-File", "tools/check.ps1"]}
 ```
 
-- git フック：`git config core.hooksPath <使う版>/extensions/dev/githooks`。コミット・push の前に、環境変数 `AI_ORG_TOKEN_FILE` のトークンを照合し、停止中・編集権なし・方針確認前・記録が壊れているときは止める。リポジトリ固有の `.git/hooks/` のフックも続けて呼ぶ。利用者自身の作業は `AI_ORG_SKIP_CLAIM_CHECK=1` で確認を省ける。
-- Claude Code の編集前フック：PreToolUse（Edit／Write／NotebookEdit）で `python <使う版>/extensions/dev/dev.py claude-guard` を、`onFailure: block` で呼ぶ。案件と結び付いたリポジトリと案件フォルダーへの書き込みを、その会話が編集権を持つときだけ許す。サブエージェントの書き込み、ROLES.json と `.editing` への書き込みは常に止める。想定外のエラーでも止める。
-- 終了：`python <使う版>/extensions/dev/dev.py finish --project <リポジトリ> --token-file <パス>`。検証コマンド、リポジトリの STATUS、未コミットの確認の後、中核の finish を呼ぶ。
+- git フック：`git config core.hooksPath <使う版>/extensions/dev/githooks`。コミット・push の前に、環境変数 `AI_ORG_TOKEN_FILE` のトークンを照合し、停止中・編集権なし・方針確認前・記録が壊れているときは止める。利用者自身の作業は `AI_ORG_SKIP_CLAIM_CHECK=1` で確認を省ける。
+  - リポジトリ固有のフックは、すべての種類（pre-commit、commit-msg、pre-push など）を続けて呼ぶ。呼ぶ先は共通の `.git/hooks`（worktree でも同じ）。以前から `core.hooksPath` で別の置き場を使っていたリポジトリは、その場所を `git config ai-org.chainHooksPath <置き場>` に移す。
+  - リポジトリで `core.hooksPath` を個別に設定していると、git の共通設定より優先され、ai-org のフックは動かない。
+- Claude Code の編集前フック：PreToolUse（Edit／Write／NotebookEdit）で `python <使う版>/extensions/dev/dev.py claude-guard` を呼ぶ。設定では `"command": "python"`、`"args": [<dev.py のパス>, "claude-guard"]`、`"onFailure": "block"` とし、フック自体が動かないときも止める（`onFailure` に対応した Claude Code の版が必要）。
+  - 案件と結び付いたリポジトリと案件フォルダーへの書き込みを、その会話が編集権を持つときだけ許す。案件フォルダーは、データフォルダーの設定に頼らず `…\cases\case-<32桁>\` の形で見分ける。`\\?\` や `\\localhost\C$\` の形のパスも通常の形に直してから判定する。
+  - サブエージェントの書き込み、ROLES.json と `.editing` への書き込みは常に止める。想定外のエラーでも止める。
+- 終了：`python <使う版>/extensions/dev/dev.py finish --project <リポジトリ> --token-file <パス>`。編集権の照合 → 検証コマンド（30分で打ち切り）→ リポジトリの STATUS（`--status-unchanged` で省略）→ 未コミット → 中核の finish（案件の STATUS は `--case-status-unchanged` で省略）。
 
 ### 必須化（利用者の設定）
 
@@ -80,7 +86,7 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 ### 防げない範囲
 
 - 同じ Windows ユーザーで動く会話どうしは、互いのトークンファイルを読める。防げるのは、取り忘れ・返却後の書き込み・別の会話が保持中の書き込み・異常終了した会話からの自動引き継ぎといった事故で、故意のなりすましは防げない。
-- Claude Code の編集前フックは Edit／Write／NotebookEdit だけが対象。シェルからの書き込みは git フックが最後の確認になる。サブエージェントは親と同じ一時フォルダーを使うので、シェルからの作業コマンドや git をサブエージェントに任せない。
+- Claude Code の編集前フックは Edit／Write／NotebookEdit だけが対象。シェルからの書き込みは、開発リポジトリなら git フックが最後の確認になるが、案件フォルダー（ROLES.json、`.editing` を含む）は git で管理していないので、シェルからの書き込みは確認を受けない。サブエージェントは親と同じ一時フォルダーを使うので、シェルからの作業コマンドや git をサブエージェントに任せない。
 - Codex・ChatGPT には編集前フックがない。ファイルの書き込みは止められず、コミット・push の時点で止まる。
 - `--no-verify` やフック設定の変更による回避は止められない。
 

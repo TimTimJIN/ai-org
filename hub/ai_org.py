@@ -54,10 +54,6 @@ def main(argv=None):
                 print("この会話のトークン：" + ("有効" if view["mine"] else ("無効" if args.token_file else "未指定")))
             return 0
         if args.command == "start":
-            if not args.token_file and os.environ.get("CLAUDECODE"):
-                print("[ai-org] Claude Code では --token-file に会話用の一時フォルダー（scratchpad）の "
-                      f"ai-org-{args.case}.token を指定してください（編集前フックがそこを見るため）。", file=sys.stderr)
-                return 1
             result = session.start(args.agent, args.token_file)
             print("[ai-org] 編集権を取得しました。" if result["claimed"] else "[ai-org] この会話はすでに編集権を持っています。")
             if result["confirmed"]:

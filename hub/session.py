@@ -108,7 +108,12 @@ class Session:
                     raise OSError("トークンを書き込んだ内容を確認できません。")
             except OSError as error:
                 # トークンを保存できないまま編集権が残らないよう、すぐに返す。
-                self.editing.release(token)
+                try:
+                    self.editing.release(token)
+                except (OSError, ValueError) as release_error:
+                    raise ValueError(f"トークンファイルを保存できず（{error}）、編集権も返せませんでした（{release_error}）。"
+                                     "誰もトークンを持たない編集権が残っています。利用者に知らせ、基盤の recover 手順で"
+                                     "復旧してください。") from error
                 raise ValueError(f"トークンファイルを保存できなかったため、編集権を返しました：{error}") from error
         confirmed = False
         # 再開されたことのある案件では、今の編集権で方針の確認を記録する（記録済みなら何もしない）。

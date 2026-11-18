@@ -23,7 +23,7 @@
 
 1. テストとレビューを通した版にタグ（例：`v0.1.0`）を付け、`git clone --branch v0.1.0 <リポジトリ> %LOCALAPPDATA%\ai-org\v0.1.0` で使う版を取り出す。開発用のクローンとは独立しているので、開発用を動かしても消しても影響しない。
 2. 置き換えと削除の前に、手順3・4の対象ファイルだけを `AI駆動×AI駆動\app-relay_旧コード_<日付>\` に写して残す（データは含めない）。
-3. データフォルダー（app-relay）に `ai-org-home.txt` を置き、使う版のフォルダーを絶対パスで書く。次のファイルを `legacy/forward.py` の写しに置き換える：`workspace_hub.py`、`hub_ui.py`、`app.py`、`knowledge.py`、`verify_work.py`、`seed_knowledge.py`。
+3. データフォルダー（app-relay）に `ai-org-home.txt` を置き、使う版のフォルダーを絶対パスで書く。次のファイルを `legacy/forward.py` の写しに置き換える：`workspace_hub.py`、`hub_ui.py`、`app.py`、`knowledge.py`、`verify_work.py`、`seed_knowledge.py`。v0.2.0 以降は `ai_org.py` も置く。
 4. 次のファイルはデータフォルダーから消す（使う版の hub/ にある）：`case_editing.py`、`case_guide.py`、`core.py`、`native.py`、`uia.ps1`、`test_*.py`、`__pycache__`。
 5. 次は残す：`open_hub.cmd`、`start.cmd`（中継経由で動く）、`*.md`（案件向けの AGENTS.md が `app-relay/WORKSPACE_HUB.md` を参照しているため）、ショートカット（`.lnk`）、データ（cases、inbox、data、knowledge-vault、work-test）。
 6. 写しで確認済みの項目に加え、本番で旧コマンドと案件画面を確認する。

@@ -1,0 +1,4 @@
+#!/bin/sh
+# ai-org：リポジトリ固有の pre-auto-gc フックを続けて呼ぶ。
+. "$(dirname "$0")/_chain.sh"
+ai_org_chain pre-auto-gc "$@"

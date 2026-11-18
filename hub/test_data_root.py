@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -37,8 +38,19 @@ class DataRootTest(unittest.TestCase):
             with self.assertRaises(ImportError):
                 __import__("forward")
 
+    def test_user_config_data_is_used_when_env_unset(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "cases").mkdir()
+            config = Path(temp) / "config.json"
+            config.write_text(json.dumps({"data": temp}), encoding="utf-8")
+            env = {k: v for k, v in os.environ.items() if k != "AI_ORG_DATA"}
+            env["AI_ORG_CONFIG"] = str(config)
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(data_root.data_root(), Path(temp).resolve())
+
     def test_unset_and_no_legacy_cases_is_refused(self):
         env = {k: v for k, v in os.environ.items() if k != "AI_ORG_DATA"}
+        env["AI_ORG_CONFIG"] = os.path.join(tempfile.gettempdir(), "ai-org-no-config.json")
         with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(data_root, "CODE_DIR", Path(temp)):
             with self.assertRaises(ValueError):
@@ -46,6 +58,7 @@ class DataRootTest(unittest.TestCase):
 
     def test_legacy_layout_uses_code_folder(self):
         env = {k: v for k, v in os.environ.items() if k != "AI_ORG_DATA"}
+        env["AI_ORG_CONFIG"] = os.path.join(tempfile.gettempdir(), "ai-org-no-config.json")
         with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(data_root, "CODE_DIR", Path(temp)):
             (Path(temp) / "cases").mkdir()
@@ -58,6 +71,7 @@ class DataRootTest(unittest.TestCase):
 
     def test_cli_without_data_root_fails_cleanly(self):
         env = {k: v for k, v in os.environ.items() if k != "AI_ORG_DATA"}
+        env["AI_ORG_CONFIG"] = os.path.join(tempfile.gettempdir(), "ai-org-no-config.json")
         env["PYTHONIOENCODING"] = "utf-8"
         result = subprocess.run([sys.executable, str(HUB / "workspace_hub.py"), "draft-status", "--draft", "0" * 32],
                                 capture_output=True, text=True, encoding="utf-8", env=env)

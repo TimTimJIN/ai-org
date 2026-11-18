@@ -1,8 +1,5 @@
 #!/bin/sh
-# ai-org：編集権を持つ会話だけにコミットを許す。確認の後、リポジトリ固有のフック（.git/hooks/pre-commit）があれば続けて呼ぶ。
-here="$(cd "$(dirname "$0")" && pwd)"
-python "$here/../dev.py" git-guard commit || exit 1
-local_hook="$(git rev-parse --git-dir)/hooks/pre-commit"
-# core.hooksPath を見ないよう、.git/hooks を直接指す（自分自身を呼び続けないため）
-if [ -x "$local_hook" ]; then exec "$local_hook" "$@"; fi
-exit 0
+# ai-org：編集権を持つ会話だけに許す（commit）。確認の後、リポジトリ固有の pre-commit フックを続けて呼ぶ。
+. "$(dirname "$0")/_chain.sh"
+python "$(dirname "$0")/../dev.py" git-guard commit || exit 1
+ai_org_chain pre-commit "$@"

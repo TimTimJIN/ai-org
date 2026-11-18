@@ -5,10 +5,12 @@
    "status_files": ["STATUS.md"], "check": ["powershell", "-NoProfile", "-File", "tools/check.ps1"]}
 
 コマンド：
-  python dev.py finish --project <パス> --token-file <パス> [--status-unchanged] [--skip-check] [--allow-dirty]
-      検証コマンド → リポジトリの STATUS の更新確認 → 未コミットの確認 → 中核の finish（案件の STATUS 確認・release）
+  python dev.py finish --project <パス> --token-file <パス> [--status-unchanged] [--case-status-unchanged]
+                       [--skip-check] [--allow-dirty]
+      編集権の照合 → 検証コマンド → リポジトリの STATUS → 未コミット → 中核の finish（案件の STATUS・release）
+  python dev.py register --project <パス> --case <案件ID> --token-file <パス> [--status-file …] [--check-json …]
   python dev.py git-guard <commit|push>      git フックから呼ぶ。AI_ORG_TOKEN_FILE のトークンを照合する
-  python dev.py claude-guard [--data <パス>]  Claude Code の PreToolUse フックから呼ぶ（標準入力にフックの JSON）
+  python dev.py claude-guard                 Claude Code の PreToolUse フックから呼ぶ（標準入力にフックの JSON）
 
 利用者自身の手作業で確認を省くときは、環境変数 AI_ORG_SKIP_CLAIM_CHECK=1 を設定する（AI は利用者の指示なしに使わない）。
 """
@@ -27,13 +29,14 @@ HUB = HERE.parent.parent / "hub"
 sys.path.insert(0, str(HUB))
 
 CONFIG = ".ai-org.json"
-CASE_DIR = re.compile(r"case-[0-9a-f]{32}\Z")
+CASE_DIR = re.compile(r"case-[0-9a-f]{32}\Z", re.IGNORECASE)
 STATUS_UPDATED = re.compile(r"^更新[：:]\s*(\d{4}-\d{2}-\d{2})")
+CHECK_TIMEOUT = 1800
 
 
 # プロジェクト設定 ---------------------------------------------------------
 def find_project(start):
-    path = Path(start).resolve()
+    path = Path(start)
     for folder in [path] + list(path.parents):
         if (folder / CONFIG).is_file():
             return folder
@@ -47,10 +50,15 @@ def load_project(folder):
     return config
 
 
-def use_data(config_data=None):
-    """データフォルダーを決める。環境変数 AI_ORG_DATA があればそれ、なければプロジェクト設定の data。"""
-    if not os.environ.get("AI_ORG_DATA") and config_data:
-        os.environ["AI_ORG_DATA"] = str(config_data)
+def set_data(folder):
+    """中核にデータフォルダーを渡す（中核は AI_ORG_DATA を読む）。"""
+    if folder:
+        os.environ["AI_ORG_DATA"] = str(folder)
+
+
+def session_for(case_id):
+    from session import Session
+    return Session(case_id)
 
 
 # 必須化の方針（利用者の設定 %USERPROFILE%\.ai-org\config.json） ------------------
@@ -69,7 +77,7 @@ def load_policy():
 
 def is_under(path, root):
     try:
-        Path(path).resolve().relative_to(Path(root).resolve())
+        normalize(path).relative_to(normalize(root))
         return True
     except ValueError:
         return False
@@ -88,9 +96,29 @@ def unregistered_reason(path, policy):
     return None
 
 
-def session_for(case_id):
-    from session import Session
-    return Session(case_id)
+# パスの正規化と案件フォルダーの判定 -----------------------------------------
+LOCAL_UNC = re.compile(r"^\\\\(?:localhost|127\.0\.0\.1|\.|\?)\\(?:UNC\\(?:localhost|127\.0\.0\.1)\\)?([A-Za-z])\$(\\.*)?$",
+                       re.IGNORECASE)
+
+
+def normalize(raw):
+    """\\\\?\\C:\\…、\\\\localhost\\C$\\… などを通常の形に直してから解決する。"""
+    text = str(raw).replace("/", "\\")
+    if text.startswith("\\\\?\\") and len(text) > 6 and text[5] == ":":
+        text = text[4:]
+    match = LOCAL_UNC.match(text)
+    if match:
+        text = match.group(1) + ":" + (match.group(2) or "\\")
+    return Path(os.path.realpath(text))
+
+
+def locate_case(target):
+    """書き込み先が案件フォルダー（…\\cases\\case-<32桁>\\…）の中なら、(案件ID, 案件フォルダー) を返す。
+    データフォルダーの設定に頼らず、フォルダーの形で判定する（設定がなくても見逃さないため）。"""
+    for folder in [target] + list(target.parents):
+        if CASE_DIR.fullmatch(folder.name) and folder.parent.name.lower() == "cases":
+            return folder.name.lower(), folder
+    return None, None
 
 
 # finish -----------------------------------------------------------------
@@ -101,12 +129,20 @@ def git(project, *args):
 def cmd_finish(args):
     project = Path(args.project).resolve()
     config = load_project(project)
-    use_data(config.get("data"))
+    set_data(os.environ.get("AI_ORG_DATA") or config.get("data"))
+    session = session_for(config["case"])
+    # 編集権の照合を最初に行う（編集権のない会話に検証コマンドを動かさせない）
+    from session import token_matches
+    if not token_matches(session.editing.current(), args.token_file):
+        raise ValueError("この会話は編集権を持っていません。")
     notes = []
     if args.skip_check:
         notes.append("検証コマンドを省きました（--skip-check）。")
     elif config.get("check"):
-        result = subprocess.run(config["check"], cwd=project)
+        try:
+            result = subprocess.run(config["check"], cwd=project, timeout=CHECK_TIMEOUT)
+        except subprocess.TimeoutExpired as error:
+            raise ValueError(f"検証コマンドが {CHECK_TIMEOUT} 秒で終わりませんでした。編集権は保持したままです。") from error
         if result.returncode != 0:
             raise ValueError("検証コマンドが失敗しました。直してから終えてください。編集権は保持したままです。")
     today = date.today().isoformat()
@@ -122,8 +158,11 @@ def cmd_finish(args):
         if not args.status_unchanged:
             raise ValueError(f"冒頭の「更新」行が今日でないファイルがあります：{'、'.join(stale)}。"
                              "状態が変わらない作業なら --status-unchanged を付けてください。")
-        notes.append(f"更新していません（--status-unchanged）：{'、'.join(stale)}")
-    dirty = [line for line in git(project, "status", "--porcelain").stdout.splitlines() if line.strip()]
+        notes.append(f"リポジトリの記録を更新していません（--status-unchanged）：{'、'.join(stale)}")
+    status = git(project, "status", "--porcelain")
+    if status.returncode != 0:
+        raise ValueError(f"git の状態を確認できません：{status.stderr.strip()}")
+    dirty = [line for line in status.stdout.splitlines() if line.strip()]
     if dirty:
         if not args.allow_dirty:
             raise ValueError(f"未コミットの変更が {len(dirty)} 件あります。編集権を持ったままコミットするか、--allow-dirty を付けてください。")
@@ -135,7 +174,7 @@ def cmd_finish(args):
         ahead = [l for l in git(project, "log", "--oneline", "@{u}..HEAD").stdout.splitlines() if l.strip()]
         if ahead:
             notes.append(f"未 push のコミットが {len(ahead)} 件あります。push は利用者の承認を得てから行います。")
-    notes += session_for(config["case"]).finish(args.token_file, args.status_unchanged)
+    notes += session.finish(args.token_file, args.case_status_unchanged)
     for note in notes:
         print(f"[ai-org] 注意：{note}")
     print("[ai-org] 編集権を返し、トークンファイルを消しました。")
@@ -152,7 +191,7 @@ def cmd_register(args):
     data = os.environ.get("AI_ORG_DATA") or policy.get("data")
     if not data:
         raise ValueError("データフォルダーが分かりません。AI_ORG_DATA か設定の data を指定してください。")
-    use_data(data)
+    set_data(data)
     reason = session_for(args.case).block_reason(args.token_file)
     if reason:
         raise ValueError(reason)
@@ -176,15 +215,14 @@ def cmd_git_guard(args):
         print(f"[ai-org] {args.hook} を中止しました。リポジトリの場所を確認できません。", file=sys.stderr)
         return 1
     toplevel = Path(top.stdout.strip())
-    project = toplevel if (toplevel / CONFIG).is_file() else None
-    if project is None:
+    if not (toplevel / CONFIG).is_file():
         reason = unregistered_reason(toplevel, load_policy())
         if reason:
             print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
             return 1
         return 0  # 開発フォルダーの外、または除外したフォルダー
-    config = load_project(project)
-    use_data(config.get("data"))
+    config = load_project(toplevel)
+    set_data(os.environ.get("AI_ORG_DATA") or config.get("data"))
     reason = session_for(config["case"]).block_reason(os.environ.get("AI_ORG_TOKEN_FILE"))
     if reason:
         print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
@@ -208,46 +246,34 @@ def claude_token_file(session_id, case_id):
     return None
 
 
-def locate_case(target, data_root):
-    """書き込み先がデータフォルダーの案件の中なら、(案件ID, 案件フォルダー) を返す。"""
-    if data_root is None:
-        return None, None
-    cases = (Path(data_root) / "cases").resolve()
-    try:
-        relative = target.relative_to(cases)
-    except ValueError:
-        return None, None
-    if relative.parts and CASE_DIR.fullmatch(relative.parts[0]):
-        return relative.parts[0], cases / relative.parts[0]
-    return None, None
-
-
-def claude_decision(payload, data_arg=None):
+def claude_decision(payload):
     """止めるなら理由、許すなら None。"""
     tool_input = payload.get("tool_input") or {}
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not raw:
         return None
-    target = Path(raw).resolve()
-    project = find_project(target.parent if not target.is_dir() else target)
-    config = load_project(project) if project else None
-    policy = load_policy()
-    data_root = os.environ.get("AI_ORG_DATA") or (config or {}).get("data") or data_arg or (policy or {}).get("data")
-    case_id, case_folder = locate_case(target, data_root)
+    target = normalize(raw)
+    case_id, case_folder = locate_case(target)
     if case_id:
         relative = target.relative_to(case_folder)
-        if relative.parts and (relative.parts[0] == ".editing" or relative.parts == ("ROLES.json",)):
+        if relative.parts and (relative.parts[0].lower() == ".editing" or
+                               (len(relative.parts) == 1 and relative.parts[0].lower() == "roles.json")):
             return "ROLES.json と .editing は AI が編集しません（担当予定は利用者が案件画面で、編集権は基盤のコマンドで管理します）。"
-    elif config:
-        case_id = config["case"]
-    elif target.name == CONFIG:
-        return None  # 案件との結び付け（.ai-org.json）を書くのは許す。中身の案件で編集権を確かめるのは register と各フック
+        data_root = case_folder.parent.parent  # 案件フォルダーの形から決める（設定や環境変数に頼らない）
     else:
-        return unregistered_reason(target, policy)
+        project = find_project(target.parent)
+        if project is None:
+            if target.name == CONFIG:
+                return None  # 結び付け（.ai-org.json）を書くのは許す。中身の案件の編集権は register と各フックで確かめる
+            return unregistered_reason(target, load_policy())
+        config = load_project(project)
+        case_id = config["case"]
+        data_root = config.get("data") or os.environ.get("AI_ORG_DATA")
+        if not data_root:
+            return f"{project / CONFIG} に data（データフォルダー）がないため、編集権を確認できません。"
     if payload.get("agent_id"):
         return "サブエージェントは、案件と結び付いたリポジトリと案件フォルダーに書き込みません（レビュー担当は review-note で返します）。"
-    if data_root:
-        use_data(data_root)
+    set_data(data_root)
     token_file = claude_token_file(payload.get("session_id"), case_id)
     reason = session_for(case_id).block_reason(token_file)
     if reason:
@@ -261,7 +287,7 @@ def cmd_claude_guard(args):
         sys.stdin.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
         payload = json.loads(sys.stdin.read())
-        reason = claude_decision(payload, args.data)
+        reason = claude_decision(payload)
     except Exception as error:  # 想定外のエラーでも止める側に倒す
         reason = f"編集前の確認でエラーが起きたため止めました：{error}"
     if reason:
@@ -276,13 +302,13 @@ def main(argv=None):
     f = sub.add_parser("finish")
     f.add_argument("--project", default=".")
     f.add_argument("--token-file", default=os.environ.get("AI_ORG_TOKEN_FILE") or None)
-    f.add_argument("--status-unchanged", action="store_true")
+    f.add_argument("--status-unchanged", action="store_true", help="リポジトリの STATUS の確認を省く")
+    f.add_argument("--case-status-unchanged", action="store_true", help="案件の STATUS の確認を省く")
     f.add_argument("--skip-check", action="store_true")
     f.add_argument("--allow-dirty", action="store_true")
     g = sub.add_parser("git-guard")
     g.add_argument("hook", choices=["commit", "push"])
-    c = sub.add_parser("claude-guard")
-    c.add_argument("--data", default=None)
+    sub.add_parser("claude-guard")
     r = sub.add_parser("register")
     r.add_argument("--project", default=".")
     r.add_argument("--case", required=True)

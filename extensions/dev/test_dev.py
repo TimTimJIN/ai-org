@@ -38,9 +38,12 @@ class DevExtensionTests(unittest.TestCase):
         (self.repo / ".ai-org.json").write_text(json.dumps({
             "case": self.case_id, "data": str(self.data), "status_files": ["STATUS.md"],
             "check": [sys.executable, "-c", "print('check ok')"]}), encoding="utf-8")
+        # 利用者の実際の設定（%USERPROFILE%\.ai-org\config.json）を読まないようにする
+        no_config = str(self.root / "no-config.json")
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("AI_ORG_")}
         self.env["PYTHONIOENCODING"] = "utf-8"
-        patcher = mock.patch.dict(os.environ, {"AI_ORG_DATA": str(self.data)})
+        self.env["AI_ORG_CONFIG"] = no_config
+        patcher = mock.patch.dict(os.environ, {"AI_ORG_DATA": str(self.data), "AI_ORG_CONFIG": no_config})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -133,7 +136,8 @@ class DevExtensionTests(unittest.TestCase):
         (self.repo / "STATUS.md").write_text(f"# 状況\n\n更新：{today}\n", encoding="utf-8")
         self.assertEqual(dev.main(args), 1)  # 未コミット
         self.assertEqual(self.commit(holder).returncode, 0)
-        self.assertEqual(dev.main(args), 1)  # 案件の STATUS.md が今日でない
+        self.assertEqual(dev.main(args), 1)  # 案件の STATUS.md が今日でない（--status-unchanged はリポジトリ側だけ）
+        self.assertEqual(dev.main(args + ["--status-unchanged"]), 1)
         (self.store.folder(self.case_id) / "STATUS.md").write_text(f"更新: {today}\n", encoding="utf-8")
         self.assertEqual(dev.main(args), 0)
         self.assertFalse(token_file.exists())
@@ -170,6 +174,78 @@ class DevExtensionTests(unittest.TestCase):
             self.assertIsNone(self.claude({"session_id": "sess-1", "tool_input": {"file_path": str(case / "STATUS.md")}}))
             self.assertIn("ROLES.json", self.claude({"session_id": "sess-1", "tool_input": {"file_path": str(case / "ROLES.json")}}))
             self.assertIn("ROLES.json", self.claude({"session_id": "sess-1", "tool_input": {"file_path": str(case / ".editing" / "owner.json")}}))
+
+    def test_claude_guard_protects_case_folder_without_any_data_setting(self):
+        # レビュー指摘（重大）：データフォルダーの設定がなくても、案件フォルダーの形で判定して守る
+        case = self.store.folder(self.case_id)
+        temp, token_file = self.scratch_token("sess-1")
+        env = {k: v for k, v in os.environ.items() if k != "AI_ORG_DATA"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch("tempfile.gettempdir", return_value=str(temp)):
+            self.assertIn("ROLES.json", self.claude({"session_id": "x", "tool_input": {"file_path": str(case / "ROLES.json")}}))
+            self.assertIn("止めました", self.claude({"session_id": "x", "tool_input": {"file_path": str(case / "STATUS.md")}}))
+            Session(self.case_id, self.store).start("Claude", token_file)
+            os.environ.pop("AI_ORG_DATA", None)
+            self.assertIsNone(self.claude({"session_id": "sess-1", "tool_input": {"file_path": str(case / "STATUS.md")}}))
+        # 環境変数が別のデータフォルダーを指していても、本番の案件フォルダーは守る
+        other = self.root / "other-data"
+        CaseStore(other / "cases")
+        with mock.patch.dict(os.environ, {"AI_ORG_DATA": str(other)}):
+            self.assertIn("止めました", self.claude({"session_id": "x", "tool_input": {"file_path": str(case / "STATUS.md")}}))
+
+    def test_claude_guard_normalizes_special_path_forms(self):
+        case = self.store.folder(self.case_id)
+        drive, rest = str(case / "ROLES.json").split(":", 1)
+        for form in ("\\\\?\\" + str(case / "ROLES.json"), f"\\\\localhost\\{drive}$" + rest,
+                     f"\\\\127.0.0.1\\{drive}$" + rest, str(case / "ROLES.json").replace("\\", "/")):
+            self.assertIn("ROLES.json", self.claude({"session_id": "x", "tool_input": {"file_path": form}}), form)
+
+    def test_worktree_and_other_local_hooks_are_chained(self):
+        token_file = self.start()
+        holder = dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))
+        self.assertEqual(self.commit(holder).returncode, 0)
+        hook = self.repo / ".git" / "hooks" / "commit-msg"
+        hook.write_text("#!/bin/sh\necho local-msg >&2\nexit 1\n", encoding="utf-8")
+        os.chmod(hook, 0o755)
+        result = self.commit(holder)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("local-msg", result.stderr)
+        hook.unlink()
+        pre = self.repo / ".git" / "hooks" / "pre-commit"
+        pre.write_text("#!/bin/sh\necho local-wt >&2\nexit 1\n", encoding="utf-8")
+        os.chmod(pre, 0o755)
+        worktree = self.root / "wt"
+        run("git", "worktree", "add", "-q", "-b", "wt", str(worktree), cwd=self.repo)
+        (worktree / "g.txt").write_text("x", encoding="utf-8")
+        run("git", "add", "-A", cwd=worktree)
+        result = run("git", "commit", "-q", "-m", "wt", cwd=worktree, env=holder)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("local-wt", result.stderr)
+
+    def test_chain_hooks_path_setting_is_used(self):
+        old = self.root / "old-hooks"
+        old.mkdir()
+        (old / "pre-commit").write_text("#!/bin/sh\necho old-path >&2\nexit 1\n", encoding="utf-8")
+        os.chmod(old / "pre-commit", 0o755)
+        run("git", "config", "ai-org.chainHooksPath", str(old), cwd=self.repo)
+        token_file = self.start()
+        result = self.commit(dict(self.env, AI_ORG_TOKEN_FILE=str(token_file)))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("old-path", result.stderr)
+
+    def test_finish_refuses_non_git_folder_and_non_holder_before_check(self):
+        token_file = self.start()
+        plain = self.root / "plain"
+        plain.mkdir()
+        (plain / ".ai-org.json").write_text((self.repo / ".ai-org.json").read_text(encoding="utf-8"), encoding="utf-8")
+        self.assertEqual(dev.main(["finish", "--project", str(plain), "--token-file", str(token_file),
+                                   "--status-unchanged", "--case-status-unchanged"]), 1)
+        self.assertTrue(token_file.exists())
+        marker = self.root / "check-ran"
+        config = json.loads((self.repo / ".ai-org.json").read_text(encoding="utf-8"))
+        config["check"] = [sys.executable, "-c", f"open(r'{marker}', 'w').close()"]
+        (self.repo / ".ai-org.json").write_text(json.dumps(config), encoding="utf-8")
+        self.assertEqual(dev.main(["finish", "--project", str(self.repo), "--token-file", str(self.root / "none.token")]), 1)
+        self.assertFalse(marker.exists())
 
     def test_claude_guard_ignores_unrelated_paths(self):
         self.assertIsNone(self.claude({"session_id": "s", "tool_input": {"file_path": str(self.root / "elsewhere.txt")}}))

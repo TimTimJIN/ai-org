@@ -1,7 +1,7 @@
 """旧来の配置（データフォルダーの中に置いたスクリプト）から、ai-org の使う版へ中継する。
 
 データフォルダー（例：AI駆動×AI駆動\\app-relay）に、このファイルを次の名前で置く（docs/MIGRATION.md の一覧を参照）：
-workspace_hub.py、hub_ui.py、app.py、knowledge.py、verify_work.py、seed_knowledge.py。
+workspace_hub.py、hub_ui.py、ai_org.py、app.py、knowledge.py、verify_work.py、seed_knowledge.py。
 `python ../../workspace_hub.py claim ...` のような旧コマンドや、案件画面の起動用 .cmd がそのまま使える。
 
 - データの置き場所：常に、このファイルがあるフォルダー（環境変数 AI_ORG_DATA より優先する）。
