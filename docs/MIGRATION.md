@@ -53,6 +53,23 @@
 - 切り替え：v0.2.0（14effdf）を `%LOCALAPPDATA%\ai-org\v0.2.0` に clone し、その場でテスト101件が成功。データフォルダーの `ai-org-home.txt` を v0.2.0 に向け、中継に `ai_org.py` を加え、ほかの中継も v0.2.0 の forward.py に更新した。前の版 v0.1.0 のフォルダーは戻すために残している。
 - 切り替え後の確認：旧コマンド（work-state、draft-status）、中継経由の `ai_org.py status`・`guard`、案件画面の起動、データフォルダーに `__pycache__` ができないこと。
 
+## 段階3・4：必須化とスワイプ案件の切り替え（2026-11-18、利用者が4項目すべてを承認）
+
+- 利用者の設定 `%USERPROFILE%\.ai-org\config.json`：dev_roots＝`Documents\2_programing\git`、exclude なし、data＝app-relay、home＝v0.2.0。既存の4リポジトリは除外せず、使うときに案件登録する。
+- git の共通設定：`core.hooksPath` を `%LOCALAPPDATA%\ai-org\v0.2.0\extensions\dev\githooks` に（以前は未設定）。
+- Claude Code のユーザー設定 `~/.claude/settings.json`：PreToolUse（Edit／Write／NotebookEdit）に `python <v0.2.0>/extensions/dev/dev.py claude-guard`、`onFailure: block`。既存の `agentPushNotifEnabled` は残した。`~/.claude/CLAUDE.md` に共通指示を新規作成。
+- Codex の共通指示 `~/.codex/AGENTS.md` を新規作成。
+- 安定したパスとして `%LOCALAPPDATA%\ai-org\current`（ジャンクション）を試したが、この環境ではジャンクションを通したファイルを Python・cmd から開けなかった。そのため使わず、各設定に版のフォルダーを直接書く。
+- 動作確認：開発フォルダーに一時的な未登録リポジトリを作り、Claude Code の Write と git commit がどちらも止まることを確かめてから消した。ai-org とスワイプのリポジトリでは、編集権を持つ会話のコミットが通ることを確かめた。
+- スワイプ案件（段階4）：`dev.py register` で `.ai-org.json` と git の設定を書き、リポジトリ単位の `core.hooksPath`（.githooks）を外し、手元専用の試作フックを消した。スワイプ案件に置いていたカイゼンの試作・レビューの記録は、ai-org 案件の `history/kaizen-from-swipe-20261118` に移した（ハッシュ一致を確認）。
+
+### 版を上げるとき
+
+1. 新しいタグを `%LOCALAPPDATA%\ai-org\<版>` に clone し、その場で `python tools/check.py` を通す。
+2. 次の5か所の版のフォルダーを書き換える：データフォルダーの `ai-org-home.txt`、`%USERPROFILE%\.ai-org\config.json` の home、git の共通設定 `core.hooksPath`、`~/.claude/settings.json` のフックの args、`~/.claude/CLAUDE.md` と `~/.codex/AGENTS.md` のパス。
+3. 中継（データフォルダーの `*.py`）を新しい版の `legacy/forward.py` で更新する。
+4. 戻すときは、2 の5か所を前の版に戻す。前の版のフォルダーは残しておく。
+
 ### レビュー（段階1）
 
 - Claude 独立レビュー（Claude Code サブエージェント）：b38299fe…（重大指摘なし）、再確認 7ec1024e…（重大指摘なし）。
