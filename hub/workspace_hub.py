@@ -13,7 +13,6 @@ from case_guide import (DEFAULT_PLAN, DRAFT_MAX_BYTES, ROLE_PLANS, load_case_dra
                         parse_case_draft, require_plan, validate_case_fields)
 from data_root import data_root
 
-ROOT = Path(__file__).resolve().parent
 CASE_ID = re.compile(r"case-[0-9a-f]{32}\Z")
 RECORD_ID = re.compile(r"[0-9a-f]{32}\Z")
 MAX_BYTES = 200000

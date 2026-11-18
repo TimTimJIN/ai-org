@@ -141,7 +141,8 @@ def handoff(root, case, shareable_only=False):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--store', default='data/knowledge')
+    # 既定はデータフォルダーの data/knowledge（カレントフォルダー基準にしない）。
+    p.add_argument('--store', default=None)
     sub = p.add_subparsers(dest='action', required=True)
     sub.add_parser('add').add_argument('json_file')
     sub.add_parser('export').add_argument('new_directory')
@@ -149,6 +150,9 @@ def main():
     h.add_argument('case')
     h.add_argument('--for-sharing', action='store_true')
     a = p.parse_args()
+    if a.store is None:
+        from data_root import data_root
+        a.store = str(data_root() / 'data' / 'knowledge')
     if a.action == 'add':
         print(add(a.store, json.loads(Path(a.json_file).read_text(encoding='utf-8')))['id'])
     elif a.action == 'export':

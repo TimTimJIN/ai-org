@@ -23,9 +23,9 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 
 ## 旧コマンドとの互換
 
-データフォルダーに `legacy/forward.py` を `workspace_hub.py`・`hub_ui.py` などの名前で置くと、
+データフォルダーに `legacy/forward.py` を `workspace_hub.py`・`hub_ui.py` などの名前で置くと（一覧は `docs/MIGRATION.md`）、
 `python ../../workspace_hub.py claim ...` などの旧コマンドと案件画面の起動用 `.cmd` が、そのまま使う版で動く。
-使う版の場所は、環境変数 `AI_ORG_HOME` か、データフォルダーの `ai-org-home.txt` に書く。
+使う版の場所は、データフォルダーの `ai-org-home.txt` に書く（ないときだけ環境変数 `AI_ORG_HOME`）。データの置き場所は、常に中継スクリプトのあるフォルダー。
 
 ## 開発する版と使う版
 
