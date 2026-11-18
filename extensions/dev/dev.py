@@ -219,7 +219,9 @@ def record_in_git_config(project, config):
     """結び付けをリポジトリの git 設定にも記録する。ブランチに左右されない、第一の根拠にする。"""
     if git(project, "rev-parse", "--git-dir").returncode != 0:
         return
-    for key, value in (("ai-org.case", config["case"]), ("ai-org.data", config["data"])):
+    for key, value in (("ai-org.case", config["case"]), ("ai-org.data", config.get("data"))):
+        if not value:
+            continue
         result = git(project, "config", "--local", key, value)
         if result.returncode != 0:
             raise ValueError(f"git の設定 {key} を書けません：{result.stderr.strip()}")
@@ -239,6 +241,14 @@ def binding_for(toplevel):
             file_config = json.loads(committed.stdout)
             if not isinstance(file_config, dict) or not CASE_DIR.fullmatch(str(file_config.get("case", ""))):
                 raise ValueError(f"直前のコミットの {CONFIG} が不正です。")
+    if not case and file_config and (toplevel / CONFIG).is_file():
+        # 手で .ai-org.json を置いたリポジトリにも、git の設定を補う（以後はブランチに左右されない）
+        try:
+            record_in_git_config(toplevel, {"case": file_config["case"],
+                                            "data": str(file_config.get("data") or "")})
+            case = file_config["case"]
+        except (OSError, ValueError):
+            pass  # 補えなくても、.ai-org.json で判定を続ける
     if case:
         if not CASE_DIR.fullmatch(case):
             raise ValueError("git の設定 ai-org.case が不正です。")
@@ -294,6 +304,14 @@ def claude_token_file(session_id, case_id):
     return None
 
 
+def find_git_root(start):
+    """上にたどって .git（フォルダーか、worktree のファイル）のある作業ツリーの最上位を返す。"""
+    for folder in [start] + list(Path(start).parents):
+        if (folder / ".git").exists():
+            return folder
+    return None
+
+
 def claude_decision(payload):
     """止めるなら理由、許すなら None。"""
     tool_input = payload.get("tool_input") or {}
@@ -311,6 +329,18 @@ def claude_decision(payload):
     else:
         project = find_project(target.parent)
         if project is None:
+            # .ai-org.json がない作業ツリー（結び付ける前からあるブランチなど）でも、git の設定 ai-org.case か
+            # 直前のコミットの .ai-org.json があれば結び付いたリポジトリとして扱う（git フックと同じ根拠）
+            git_root = find_git_root(target.parent)
+            binding = binding_for(git_root) if git_root else None
+            if binding:
+                project = git_root
+        if project is not None and not (project / CONFIG).is_file():
+            case_id = binding["case"]
+            data_root = binding.get("data") or os.environ.get("AI_ORG_DATA")
+            if not data_root:
+                return "git の設定 ai-org.data がないため、編集権を確認できません。"
+        elif project is None:
             if target.name != CONFIG:
                 return unregistered_reason(target, load_policy())
             # 結び付け（.ai-org.json）を新しく書くときは、書く中身の案件で編集権を確かめる（register と同じ条件）

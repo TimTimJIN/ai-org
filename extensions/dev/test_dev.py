@@ -265,6 +265,25 @@ class DevExtensionTests(unittest.TestCase):
         self.assertNotEqual(run("git", "commit", "-q", "-m", "o", cwd=self.repo, env=self.env).returncode, 0)
         self.assertEqual(run("git", "commit", "-q", "-m", "o", cwd=self.repo, env=holder).returncode, 0)
 
+    def test_claude_guard_uses_git_config_binding_without_file(self):
+        # v0.2.1：.ai-org.json のない作業ツリー（結び付ける前からのブランチ）でも、git の設定で編集権を確かめる
+        run("git", "config", "--local", "ai-org.case", self.case_id, cwd=self.repo)
+        run("git", "config", "--local", "ai-org.data", str(self.data), cwd=self.repo)
+        (self.repo / ".ai-org.json").unlink()
+        target = str(self.repo / "a.txt")
+        self.assertIn("止めました", self.claude({"session_id": "x", "tool_input": {"file_path": target}}))
+        temp, token_file = self.scratch_token("sess-g")
+        Session(self.case_id, self.store).start("Claude", token_file)
+        with mock.patch("tempfile.gettempdir", return_value=str(temp)):
+            self.assertIsNone(self.claude({"session_id": "sess-g", "tool_input": {"file_path": target}}))
+
+    def test_git_guard_fills_git_config_for_hand_written_binding(self):
+        # v0.2.1：手で置いた .ai-org.json にも git の設定を補う
+        self.assertEqual(run("git", "config", "--get", "ai-org.case", cwd=self.repo).stdout.strip(), "")
+        token_file = self.start()
+        self.assertEqual(self.commit(dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))).returncode, 0)
+        self.assertEqual(run("git", "config", "--get", "ai-org.case", cwd=self.repo).stdout.strip(), self.case_id)
+
     def test_git_config_and_file_mismatch_blocks(self):
         token_file = self.start()
         run("git", "config", "--local", "ai-org.case", "case-" + "0" * 32, cwd=self.repo)

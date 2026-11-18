@@ -49,6 +49,7 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 | 停止要求が出たとき | `pause-ack --case <案件ID> --token-file <パス>` |
 | 作業の後 | `finish --case <案件ID> --token-file <パス>`：案件の STATUS.md 冒頭の「更新」行が今日でなければ止まる（`--status-unchanged` で省略可）。release してトークンを消す |
 | 確認だけ | `guard --case <案件ID> --token-file <パス>`：書き込んでよければ 0、だめなら 1 |
+| 写しを作る | `report [--out <ファイル>]`：全案件の状態・編集権・担当予定・STATUS の更新日・レビュー記録の数を Markdown の表にする。Notion・Drive への反映は、利用者の指示を受けた担当がこの出力を使って行う（コマンド自体は外部に書き込まない。トークンやログは含めない） |
 
 - Claude Code は、`--token-file` に会話用の一時フォルダー（scratchpad）の `ai-org-<案件ID>.token` を指定する（編集前フックがそこを探す）。
 - Codex など：`--token-file` を省くと、一時フォルダーの `ai-org\` に一意の名前で作られ、パスが表示される。それを会話の中だけで保持する。
@@ -66,7 +67,8 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 - git フック：`git config core.hooksPath <使う版>/extensions/dev/githooks`。コミット（prepare-commit-msg）と push（pre-push）の前に、環境変数 `AI_ORG_TOKEN_FILE` のトークンを照合し、停止中・編集権なし・方針確認前・記録が壊れているときは止める。利用者自身の作業は `AI_ORG_SKIP_CLAIM_CHECK=1` で確認を省ける。
   - prepare-commit-msg は、通常のコミット、マージ、cherry-pick、revert のすべてで呼ばれ、`--no-verify` でも飛ばされない。
   - 結び付けの根拠は、git の設定 `ai-org.case`（register が書く。ブランチに左右されない）→ 作業ツリーの `.ai-org.json` → 直前のコミットの `.ai-org.json` の順。結び付ける前からあるブランチや orphan ブランチ、結び付けを消すコミットでも確認を外せない。git の設定と `.ai-org.json` の案件が食い違えば止める。
-  - pre-commit（固有の整形ツールが動く前に止める）と pre-applypatch（`git am`）でも確認する。
+  - pre-commit（固有の整形ツールが動く前に止める）と pre-applypatch（`git am`）でも確認する。通常のコミットでは pre-commit と prepare-commit-msg の2回確認する（約0.5秒増える）が、片方を飛ばす経路（`--no-verify`、マージ、cherry-pick）があるため、意図して両方に置いている。
+  - Claude Code の編集前フックも、`.ai-org.json` のない作業ツリーでは git の設定 `ai-org.case`（または直前のコミットの `.ai-org.json`）で結び付けを確かめる。手で `.ai-org.json` を置いたリポジトリには、git フックが動いたときに git の設定を補う。
   - リポジトリ固有のフックは、クライアント側・サーバー側の主な種類を続けて呼ぶ。呼ぶ先は共通の `.git/hooks`（worktree でも同じ）。以前から `core.hooksPath` で別の置き場を使っていたリポジトリは、その場所を `git config ai-org.chainHooksPath <置き場>` に移す。置き場が見つからないときは注意を表示する。
   - 頻繁に動く reference-transaction と post-index-change は、git の操作が大きく遅くなるため包まない。git の共通設定で ai-org のフックを使うと、これら2種類のリポジトリ固有のフックは動かない。
   - リポジトリで `core.hooksPath` を個別に設定していると、git の共通設定より優先され、ai-org のフックは動かない。

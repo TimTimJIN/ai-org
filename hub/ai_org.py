@@ -20,6 +20,8 @@ from session import Session
 def main(argv=None):
     parser = argparse.ArgumentParser(description="ai-org の作業コマンド")
     sub = parser.add_subparsers(dest="command", required=True)
+    rep = sub.add_parser("report", help="全案件の一覧（人が読む写し）を Markdown で出す")
+    rep.add_argument("--out", default=None, help="書き出すファイル。省くと画面に出す")
     for name in ("start", "status", "pause-ack", "finish", "guard"):
         p = sub.add_parser(name)
         p.add_argument("--case", required=True)
@@ -31,6 +33,21 @@ def main(argv=None):
         if name == "status":
             p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "report":
+        try:
+            from report import build_report
+            text = build_report()
+            if args.out:
+                from pathlib import Path
+                Path(args.out).write_text(text, encoding="utf-8")
+                print(f"[ai-org] 案件の一覧を書き出しました：{args.out}")
+            else:
+                sys.stdout.reconfigure(encoding="utf-8")
+                print(text, end="")
+            return 0
+        except (OSError, ValueError) as error:
+            print(f"[ai-org] 中止：{error}", file=sys.stderr)
+            return 1
     try:
         session = Session(args.case)
         if args.command == "guard":
