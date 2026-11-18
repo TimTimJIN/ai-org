@@ -65,7 +65,8 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 
 - git フック：`git config core.hooksPath <使う版>/extensions/dev/githooks`。コミット（prepare-commit-msg）と push（pre-push）の前に、環境変数 `AI_ORG_TOKEN_FILE` のトークンを照合し、停止中・編集権なし・方針確認前・記録が壊れているときは止める。利用者自身の作業は `AI_ORG_SKIP_CLAIM_CHECK=1` で確認を省ける。
   - prepare-commit-msg は、通常のコミット、マージ、cherry-pick、revert のすべてで呼ばれ、`--no-verify` でも飛ばされない。
-  - 作業ツリーに `.ai-org.json` がなくても、直前のコミットにあれば結び付いたリポジトリとして扱う（結び付けを消すコミットで確認を外せない）。
+  - 結び付けの根拠は、git の設定 `ai-org.case`（register が書く。ブランチに左右されない）→ 作業ツリーの `.ai-org.json` → 直前のコミットの `.ai-org.json` の順。結び付ける前からあるブランチや orphan ブランチ、結び付けを消すコミットでも確認を外せない。git の設定と `.ai-org.json` の案件が食い違えば止める。
+  - pre-commit（固有の整形ツールが動く前に止める）と pre-applypatch（`git am`）でも確認する。
   - リポジトリ固有のフックは、クライアント側・サーバー側の主な種類を続けて呼ぶ。呼ぶ先は共通の `.git/hooks`（worktree でも同じ）。以前から `core.hooksPath` で別の置き場を使っていたリポジトリは、その場所を `git config ai-org.chainHooksPath <置き場>` に移す。置き場が見つからないときは注意を表示する。
   - 頻繁に動く reference-transaction と post-index-change は、git の操作が大きく遅くなるため包まない。git の共通設定で ai-org のフックを使うと、これら2種類のリポジトリ固有のフックは動かない。
   - リポジトリで `core.hooksPath` を個別に設定していると、git の共通設定より優先され、ai-org のフックは動かない。
@@ -91,7 +92,8 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 - 同じ Windows ユーザーで動く会話どうしは、互いのトークンファイルを読める。防げるのは、取り忘れ・返却後の書き込み・別の会話が保持中の書き込み・異常終了した会話からの自動引き継ぎといった事故で、故意のなりすましは防げない。
 - Claude Code の編集前フックは Edit／Write／NotebookEdit だけが対象。シェルからの書き込みは、開発リポジトリなら git フックが最後の確認になるが、案件フォルダー（ROLES.json、`.editing` を含む）は git で管理していないので、シェルからの書き込みは確認を受けない。サブエージェントは親と同じ一時フォルダーを使うので、シェルからの作業コマンドや git をサブエージェントに任せない。
 - Codex・ChatGPT には編集前フックがない。ファイルの書き込みは止められず、コミット・push の時点で止まる。
-- `--no-verify` やフック設定の変更による回避は止められない。
+- フックを通らない git の操作（`commit-tree` と `update-ref`、`branch -f`、`reset` など）は止められない。push の時点で確認を受ける。
+- フック設定の変更による回避は止められない（`--no-verify` は prepare-commit-msg を飛ばせないので、コミットは止まる）。
 
 ## テスト
 

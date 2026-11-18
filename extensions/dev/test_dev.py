@@ -252,6 +252,45 @@ class DevExtensionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("local-wt", result.stderr)
 
+    def test_git_config_binding_covers_old_and_orphan_branches(self):
+        token_file = self.start()
+        holder = dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))
+        run("git", "config", "--local", "ai-org.case", self.case_id, cwd=self.repo)
+        run("git", "config", "--local", "ai-org.data", str(self.data), cwd=self.repo)
+        run("git", "checkout", "-q", "--orphan", "lonely", cwd=self.repo)
+        run("git", "rm", "-q", "-rf", "--cached", ".", cwd=self.repo)
+        (self.repo / ".ai-org.json").unlink()
+        (self.repo / "o.txt").write_text("o", encoding="utf-8")
+        run("git", "add", "o.txt", cwd=self.repo)
+        self.assertNotEqual(run("git", "commit", "-q", "-m", "o", cwd=self.repo, env=self.env).returncode, 0)
+        self.assertEqual(run("git", "commit", "-q", "-m", "o", cwd=self.repo, env=holder).returncode, 0)
+
+    def test_git_config_and_file_mismatch_blocks(self):
+        token_file = self.start()
+        run("git", "config", "--local", "ai-org.case", "case-" + "0" * 32, cwd=self.repo)
+        result = self.commit(dict(self.env, AI_ORG_TOKEN_FILE=str(token_file)))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("食い違", result.stderr)
+
+    def test_git_am_is_guarded(self):
+        token_file = self.start()
+        holder = dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))
+        self.assertEqual(self.commit(holder).returncode, 0)
+        self.assertEqual(self.commit(holder).returncode, 0)
+        patch = run("git", "format-patch", "-1", "HEAD", "--stdout", cwd=self.repo).stdout
+        run("git", "reset", "-q", "--hard", "HEAD~1", cwd=self.repo)
+        before = run("git", "rev-parse", "HEAD", cwd=self.repo).stdout
+        subprocess.run(["git", "am"], input=patch, cwd=self.repo, capture_output=True, text=True, encoding="utf-8", env=self.env)
+        run("git", "am", "--abort", cwd=self.repo)
+        self.assertEqual(run("git", "rev-parse", "HEAD", cwd=self.repo).stdout, before)
+
+    def test_register_records_git_config(self):
+        (self.repo / ".ai-org.json").unlink()
+        token_file = self.start()
+        self.assertEqual(dev.main(["register", "--project", str(self.repo), "--case", self.case_id,
+                                   "--token-file", str(token_file)]), 0)
+        self.assertEqual(run("git", "config", "--get", "ai-org.case", cwd=self.repo).stdout.strip(), self.case_id)
+
     def test_chain_hooks_path_setting_is_used(self):
         old = self.root / "old-hooks"
         old.mkdir()

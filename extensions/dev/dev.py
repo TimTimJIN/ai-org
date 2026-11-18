@@ -100,6 +100,10 @@ def unregistered_reason(path, policy):
 def local_unc_pattern():
     import socket
     hosts = ["localhost", r"127\.0\.0\.1", r"\[::1\]", re.escape(socket.gethostname())]
+    try:  # このPCの LAN の IP アドレス（\\192.168.x.x\C$\… の形）
+        hosts += [re.escape(address) for address in socket.gethostbyname_ex(socket.gethostname())[2]]
+    except OSError:
+        pass
     host = "(?:" + "|".join(hosts) + ")"
     return re.compile(r"^\\\\(?:" + host + r"|\.|\?)\\(?:UNC\\" + host + r"\\)?([A-Za-z])\$(\\.*)?$", re.IGNORECASE)
 
@@ -205,8 +209,44 @@ def cmd_register(args):
     config = {"case": args.case, "data": str(Path(data).resolve()), "status_files": args.status_file or [],
               "check": check}
     (project / CONFIG).write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"[ai-org] {project} を案件 {args.case} に結び付けました（{CONFIG}）。コミットに含めてください。")
+    record_in_git_config(project, config)
+    print(f"[ai-org] {project} を案件 {args.case} に結び付けました（{CONFIG} と git の設定 ai-org.case）。"
+          f"{CONFIG} はコミットに含めてください。")
     return 0
+
+
+def record_in_git_config(project, config):
+    """結び付けをリポジトリの git 設定にも記録する。ブランチに左右されない、第一の根拠にする。"""
+    if git(project, "rev-parse", "--git-dir").returncode != 0:
+        return
+    for key, value in (("ai-org.case", config["case"]), ("ai-org.data", config["data"])):
+        result = git(project, "config", "--local", key, value)
+        if result.returncode != 0:
+            raise ValueError(f"git の設定 {key} を書けません：{result.stderr.strip()}")
+
+
+def binding_for(toplevel):
+    """リポジトリの結び付けを返す。なければ None。
+    根拠の順：git の設定 ai-org.case（ブランチに左右されない）→ 作業ツリーの .ai-org.json → 直前のコミットの .ai-org.json。
+    git の設定がある場合、.ai-org.json の case が食い違えば止める。"""
+    case = git(toplevel, "config", "--local", "--get", "ai-org.case").stdout.strip()
+    file_config = None
+    if (toplevel / CONFIG).is_file():
+        file_config = load_project(toplevel)
+    else:
+        committed = git(toplevel, "show", f"HEAD:{CONFIG}")
+        if committed.returncode == 0:
+            file_config = json.loads(committed.stdout)
+            if not isinstance(file_config, dict) or not CASE_DIR.fullmatch(str(file_config.get("case", ""))):
+                raise ValueError(f"直前のコミットの {CONFIG} が不正です。")
+    if case:
+        if not CASE_DIR.fullmatch(case):
+            raise ValueError("git の設定 ai-org.case が不正です。")
+        if file_config and file_config.get("case", "").lower() != case.lower():
+            raise ValueError(f"git の設定 ai-org.case と {CONFIG} の case が食い違っています。利用者に確認してください。")
+        data = git(toplevel, "config", "--local", "--get", "ai-org.data").stdout.strip()
+        return {"case": case, "data": data or (file_config or {}).get("data")}
+    return file_config
 
 
 # git フック ---------------------------------------------------------------
@@ -219,23 +259,17 @@ def cmd_git_guard(args):
         print(f"[ai-org] {args.hook} を中止しました。リポジトリの場所を確認できません。", file=sys.stderr)
         return 1
     toplevel = Path(top.stdout.strip())
-    if (toplevel / CONFIG).is_file():
-        config = load_project(toplevel)
-    else:
-        # 作業ツリーになくても、直前のコミットにあれば結び付いたリポジトリとして扱う
-        # （.ai-org.json を消すコミットや revert で確認を外せないようにする）
-        committed = git(toplevel, "show", f"HEAD:{CONFIG}")
-        if committed.returncode == 0:
-            config = json.loads(committed.stdout)
-            if not isinstance(config, dict) or not CASE_DIR.fullmatch(str(config.get("case", ""))):
-                print(f"[ai-org] {args.hook} を中止しました。直前のコミットの {CONFIG} が不正です。", file=sys.stderr)
-                return 1
-        else:
-            reason = unregistered_reason(toplevel, load_policy())
-            if reason:
-                print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
-                return 1
-            return 0  # 開発フォルダーの外、または除外したフォルダー
+    try:
+        config = binding_for(toplevel)
+    except ValueError as error:
+        print(f"[ai-org] {args.hook} を中止しました。{error}", file=sys.stderr)
+        return 1
+    if config is None:
+        reason = unregistered_reason(toplevel, load_policy())
+        if reason:
+            print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
+            return 1
+        return 0  # 開発フォルダーの外、または除外したフォルダー
     set_data(config.get("data") or os.environ.get("AI_ORG_DATA"))
     reason = session_for(config["case"]).block_reason(os.environ.get("AI_ORG_TOKEN_FILE"))
     if reason:

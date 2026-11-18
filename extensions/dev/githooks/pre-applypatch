@@ -1,4 +1,6 @@
 #!/bin/sh
-# ai-org：リポジトリ固有の pre-applypatch フックを続けて呼ぶ。
+# ai-org：編集権を持つ会話だけに許す（commit）。確認の後、リポジトリ固有の pre-applypatch フックを続けて呼ぶ。
+# pre-commit：固有の整形ツールなどがファイルを書き換える前に止める。pre-applypatch：git am は prepare-commit-msg を呼ばないため。
 . "$(dirname "$0")/_chain.sh"
+python "$(dirname "$0")/../dev.py" git-guard commit || exit 1
 ai_org_chain pre-applypatch "$@"
