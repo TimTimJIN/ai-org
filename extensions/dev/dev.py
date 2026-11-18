@@ -236,7 +236,11 @@ def binding_for(toplevel):
     head = None
     committed = git(toplevel, "show", f"HEAD:{CONFIG}")
     if committed.returncode == 0:
-        head = json.loads(committed.stdout)
+        try:
+            # 作業ツリー側（utf-8-sig）と同じく、先頭の BOM を許す
+            head = json.loads(committed.stdout.lstrip("﻿"))
+        except ValueError as error:
+            raise ValueError(f"直前のコミットの {CONFIG} を読み取れません：{error}") from error
         if not isinstance(head, dict) or not CASE_DIR.fullmatch(str(head.get("case", ""))):
             raise ValueError(f"直前のコミットの {CONFIG} が不正です。")
     if case and not CASE_DIR.fullmatch(case):

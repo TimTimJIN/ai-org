@@ -30,23 +30,38 @@ class ReportTests(unittest.TestCase):
 
 class ReportSafetyTests(unittest.TestCase):
     def test_write_refuses_data_folder_and_foreign_files(self):
-        from report import write_report
+        from report import MARKER, write_report
         with TemporaryDirectory() as temp:
             data = Path(temp) / "data"
             (data / "cases").mkdir(parents=True)
+            report = f"# 案件の一覧（写し）\n{MARKER}\n"
             owner = data / "cases" / "owner.json"
             owner.write_text("{}", encoding="utf-8")
             with self.assertRaises(ValueError):
-                write_report("# 案件の一覧\n", owner, data)
+                write_report(report, owner, data)
             self.assertEqual(owner.read_text(encoding="utf-8"), "{}")
-            other = Path(temp) / "notes.md"
-            other.write_text("大事なメモ", encoding="utf-8")
-            with self.assertRaises(ValueError):
-                write_report("# 案件の一覧\n", other, data)
+            for existing in ("大事なメモ", "# 案件の一覧と運用メモ\n手書きの内容\n"):
+                other = Path(temp) / "notes.md"
+                other.write_text(existing, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    write_report(report, other, data)
+                self.assertEqual(other.read_text(encoding="utf-8"), existing)
             out = Path(temp) / "report.md"
-            write_report("# 案件の一覧（写し）\n", out, data)
-            write_report("# 案件の一覧（更新）\n", out, data)  # 写し同士は上書きできる
+            write_report(report, out, data)
+            write_report(f"# 案件の一覧（更新）\n{MARKER}\n", out, data)  # 写し同士は上書きできる
             self.assertIn("更新", out.read_text(encoding="utf-8"))
+
+    def test_secret_like_strings_are_masked_but_case_ids_kept(self):
+        with TemporaryDirectory() as temp:
+            store = CaseStore(Path(temp) / "cases")
+            case = store.create("鍵", "目的")["id"]
+            (store.folder(case) / "STATUS.md").write_text(
+                f"状態: 鍵 sk-ABCDEF1234567890 と {'a1' * 20} を貼った。{case} は残す\n", encoding="utf-8")
+            text = build_report(store)
+            self.assertNotIn("sk-ABCDEF1234567890", text)
+            self.assertNotIn("a1" * 20, text)
+            self.assertIn("［伏せ字］", text)
+            self.assertIn(f"{case} は残す", text)
 
     def test_one_broken_status_does_not_stop_report(self):
         with TemporaryDirectory() as temp:

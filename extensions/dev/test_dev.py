@@ -284,6 +284,16 @@ class DevExtensionTests(unittest.TestCase):
         self.assertEqual(self.commit(dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))).returncode, 0)
         self.assertEqual(run("git", "config", "--get", "ai-org.case", cwd=self.repo).stdout.strip(), self.case_id)
 
+    def test_bom_in_committed_binding_is_accepted(self):
+        # Codex 再確認（重大）：旧版で BOM 付きの .ai-org.json をコミットしていても、保持者は止まらない
+        token_file = self.start()
+        holder = dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))
+        raw = (self.repo / ".ai-org.json").read_text(encoding="utf-8")
+        (self.repo / ".ai-org.json").write_text("﻿" + raw, encoding="utf-8")
+        self.assertEqual(self.commit(holder).returncode, 0)
+        run("git", "config", "--unset", "ai-org.case", cwd=self.repo)
+        self.assertEqual(self.commit(holder).returncode, 0)
+
     def test_wrong_case_in_worktree_is_not_persisted(self):
         # Codex 指摘1：編集権の確認前に、作業ツリーの誤った案件を git の設定へ書かない
         token_file = self.start()

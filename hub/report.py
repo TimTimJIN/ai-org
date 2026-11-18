@@ -15,6 +15,11 @@ from workspace_hub import CaseStore
 STATUS_LINE = re.compile(r"^(状態|担当|更新)[：:]\s*(.+)$")
 MAX_CELL = 200
 HEADER = "# 案件の一覧"
+# report が作ったファイルだけに入る目印。上書きしてよいかは、この行があるかで決める
+MARKER = "<!-- ai-org report: generated copy, safe to overwrite -->"
+# 認証情報らしい長い文字列（16進・base64 風・よくある鍵の接頭辞）を写しに載せない
+SECRET = re.compile(r"(?:sk-|ghp_|gho_|xox[bap]-|AKIA)[A-Za-z0-9_\-]{8,}"
+                    r"|(?<![A-Za-z0-9-])(?!case-)[A-Za-z0-9+/=_\-]{32,}")  # 案件ID（case-…）は伏せない
 
 
 def read_inside(folder, name):
@@ -41,6 +46,7 @@ def status_summary(folder):
 
 def cell(text):
     text = str(text).replace("|", "／").replace("\r", " ").replace("\n", " ")
+    text = SECRET.sub("［伏せ字］", text)
     return text if len(text) <= MAX_CELL else text[:MAX_CELL] + "…"
 
 
@@ -48,7 +54,7 @@ def build_report(store=None, now=None):
     store = store or CaseStore()
     cases, warnings = store.list()
     stamp = (now or datetime.now(timezone.utc)).astimezone().strftime("%Y-%m-%d %H:%M")
-    lines = [f"{HEADER}（{stamp} 時点の写し）", "",
+    lines = [f"{HEADER}（{stamp} 時点の写し）", MARKER, "",
              "正本はデータフォルダーの案件記録。この一覧は写しで、ここを編集しても案件には反映されない。", "",
              "| 案件 | 状態（STATUS） | 進行 | 編集権 | 担当予定 | STATUS の更新 | レビュー記録 |",
              "| --- | --- | --- | --- | --- | --- | --- |"]
@@ -70,7 +76,7 @@ def build_report(store=None, now=None):
         except (ValueError, AttributeError):
             planned = "未設定"
         reviews = len(list((folder / "reviews").glob("*.json"))) if (folder / "reviews").is_dir() else 0
-        lines.append(f"| {cell(task['title'])}<br>`{case_id}` | {cell(summary.get('状態', '（STATUS なし）'))} | "
+        lines.append(f"| {cell(task['title'])}<br>`{case_id}` | {cell(summary.get('状態', '（STATUS なし）'))} | "  # noqa: E501
                      f"{progress} | {cell(holder)} | {cell(planned)} | {cell(summary.get('更新', '—'))} | {reviews} 件 |")
     if warnings:
         # 詳細（パスやエラー文）は写しに載せない
@@ -85,9 +91,9 @@ def write_report(text, out, data_root):
         raise ValueError("写しはデータフォルダーの中には書きません（案件記録を壊さないため）。別の場所を指定してください。")
     if path.exists():
         try:
-            first = path.read_text(encoding="utf-8").splitlines()[:1]
+            head = path.read_text(encoding="utf-8").splitlines()[:2]
         except (OSError, ValueError):
-            first = []
-        if not first or not first[0].startswith(HEADER):
-            raise ValueError(f"{path} は案件一覧の写しではないため、上書きしません。")
+            head = []
+        if len(head) < 2 or head[1].strip() != MARKER:
+            raise ValueError(f"{path} は report が作った写しではないため、上書きしません。")
     path.write_text(text, encoding="utf-8")
