@@ -8,6 +8,8 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 | 場所 | 中身 |
 | --- | --- |
 | `hub/` | 中核のコード（案件、編集権、停止・再開、レビュー、受信箱、案件画面）と自動テスト。旧 ChatRelay の試作（`app.py`、`core.py`、`native.py`、`uia.ps1`）も当面ここに置く |
+| `hub/ai_org.py`、`hub/session.py` | 作業コマンド（中核）：start／status／pause-ack／finish／guard |
+| `extensions/dev/` | 開発向けの拡張：git フック、Claude Code の編集前フック、検証コマンドとの連携 |
 | `legacy/forward.py` | 旧来の配置から使う版へ中継するスクリプト（下記） |
 | `docs/` | 利用ガイド（`WORKSPACE_HUB.md`）、引き継ぎ形式、移行記録など |
 
@@ -33,8 +35,46 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 - 使う版は、タグを独立に clone した別のフォルダー（例：`%LOCALAPPDATA%\ai-org\v0.1.0`）。データフォルダーの `ai-org-home.txt` がそこを指す。開発用のクローンには依存しない。
 - 開発中の変更が、使っている案件にすぐ効かないようにするため。戻すときは `ai-org-home.txt` を前の版に向ける。手順は `docs/MIGRATION.md`。
 
+## 作業コマンド（中核）
+
+基盤の手順（work-state → claim → confirm-direction → 作業 → STATUS 更新 → release）を1つずつのコマンドにした。
+本人確認はトークンファイルで行う。トークンファイルは会話ごとに別の場所に置き、作業中だけ保持し、中身を表示・転記しない。
+
+| いつ | コマンド（使う版の `hub/` で `python ai_org.py …`） |
+| --- | --- |
+| 作業の前 | `start --case <案件ID> --agent "<担当とセッション名>" [--token-file <パス>]`：停止中・他の会話が保持中なら止まる。claim し、再開済みの案件なら方針確認を記録し、方針を表示する |
+| 途中 | `status --case <案件ID> [--token-file <パス>]` |
+| 停止要求が出たとき | `pause-ack --case <案件ID> --token-file <パス>` |
+| 作業の後 | `finish --case <案件ID> --token-file <パス>`：案件の STATUS.md 冒頭の「更新」行が今日でなければ止まる（`--status-unchanged` で省略可）。release してトークンを消す |
+| 確認だけ | `guard --case <案件ID> --token-file <パス>`：書き込んでよければ 0、だめなら 1 |
+
+- Claude Code は、`--token-file` に会話用の一時フォルダー（scratchpad）の `ai-org-<案件ID>.token` を指定する（編集前フックがそこを探す）。
+- Codex など：`--token-file` を省くと、一時フォルダーの `ai-org\` に一意の名前で作られ、パスが表示される。それを会話の中だけで保持する。
+- 担当名は、会話を区別できるよう識別子を含める（例：`Claude Code ai-org ea39bc9a`）。
+
+## 開発向けの拡張（extensions/dev）
+
+開発リポジトリの直下に `.ai-org.json` を置き、案件と結び付ける。
+
+```json
+{"case": "case-…", "data": "C:\\…\\app-relay",
+ "status_files": ["STATUS.md"], "check": ["powershell", "-NoProfile", "-File", "tools/check.ps1"]}
+```
+
+- git フック：`git config core.hooksPath <使う版>/extensions/dev/githooks`。コミット・push の前に、環境変数 `AI_ORG_TOKEN_FILE` のトークンを照合し、停止中・編集権なし・方針確認前・記録が壊れているときは止める。リポジトリ固有の `.git/hooks/` のフックも続けて呼ぶ。利用者自身の作業は `AI_ORG_SKIP_CLAIM_CHECK=1` で確認を省ける。
+- Claude Code の編集前フック：PreToolUse（Edit／Write／NotebookEdit）で `python <使う版>/extensions/dev/dev.py claude-guard` を、`onFailure: block` で呼ぶ。案件と結び付いたリポジトリと案件フォルダーへの書き込みを、その会話が編集権を持つときだけ許す。サブエージェントの書き込み、ROLES.json と `.editing` への書き込みは常に止める。想定外のエラーでも止める。
+- 終了：`python <使う版>/extensions/dev/dev.py finish --project <リポジトリ> --token-file <パス>`。検証コマンド、リポジトリの STATUS、未コミットの確認の後、中核の finish を呼ぶ。
+
+### 防げない範囲
+
+- 同じ Windows ユーザーで動く会話どうしは、互いのトークンファイルを読める。防げるのは、取り忘れ・返却後の書き込み・別の会話が保持中の書き込み・異常終了した会話からの自動引き継ぎといった事故で、故意のなりすましは防げない。
+- Claude Code の編集前フックは Edit／Write／NotebookEdit だけが対象。シェルからの書き込みは git フックが最後の確認になる。サブエージェントは親と同じ一時フォルダーを使うので、シェルからの作業コマンドや git をサブエージェントに任せない。
+- Codex・ChatGPT には編集前フックがない。ファイルの書き込みは止められず、コミット・push の時点で止まる。
+- `--no-verify` やフック設定の変更による回避は止められない。
+
 ## テスト
 
 ```bash
 cd hub && python -m unittest discover -p "test_*.py"
+cd extensions/dev && python -m unittest test_dev
 ```

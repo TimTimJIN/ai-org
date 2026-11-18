@@ -1,0 +1,8 @@
+#!/bin/sh
+# ai-org：編集権を持つ会話だけに push を許す（push には利用者の承認も必要）。確認の後、リポジトリ固有のフックがあれば続けて呼ぶ。
+here="$(cd "$(dirname "$0")" && pwd)"
+python "$here/../dev.py" git-guard push || exit 1
+local_hook="$(git rev-parse --git-dir)/hooks/pre-push"
+# core.hooksPath を見ないよう、.git/hooks を直接指す（自分自身を呼び続けないため）
+if [ -x "$local_hook" ]; then exec "$local_hook" "$@"; fi
+exit 0
