@@ -35,11 +35,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "report":
         try:
-            from report import build_report
+            from data_root import data_root
+            from report import build_report, write_report
             text = build_report()
             if args.out:
-                from pathlib import Path
-                Path(args.out).write_text(text, encoding="utf-8")
+                write_report(text, args.out, data_root())
                 print(f"[ai-org] 案件の一覧を書き出しました：{args.out}")
             else:
                 sys.stdout.reconfigure(encoding="utf-8")

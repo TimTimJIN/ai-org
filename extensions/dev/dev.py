@@ -136,8 +136,8 @@ def git(project, *args):
 def cmd_finish(args):
     project = Path(args.project).resolve()
     config = load_project(project)
-    # データフォルダーの優先順位は全コマンドで同じ：.ai-org.json の data → 環境変数 AI_ORG_DATA
-    set_data(config.get("data") or os.environ.get("AI_ORG_DATA"))
+    # データフォルダーの優先順位は全コマンドで同じ（resolve_data）
+    set_data(resolve_data(config))
     session = session_for(config["case"])
     # 編集権の照合を最初に行う（編集権のない会話に検証コマンドを動かさせない）
     from session import token_matches
@@ -228,35 +228,33 @@ def record_in_git_config(project, config):
 
 
 def binding_for(toplevel):
-    """リポジトリの結び付けを返す。なければ None。
-    根拠の順：git の設定 ai-org.case（ブランチに左右されない）→ 作業ツリーの .ai-org.json → 直前のコミットの .ai-org.json。
-    git の設定がある場合、.ai-org.json の case が食い違えば止める。"""
+    """リポジトリの結び付けを返す（読み取りだけで、何も書き換えない）。なければ None。
+    根拠：git の設定 ai-org.case（ブランチに左右されない）、作業ツリーの .ai-org.json、直前のコミットの .ai-org.json。
+    これらの案件が1つでも食い違えば止める（結び付けの変更は利用者が行う）。"""
     case = git(toplevel, "config", "--local", "--get", "ai-org.case").stdout.strip()
-    file_config = None
-    if (toplevel / CONFIG).is_file():
-        file_config = load_project(toplevel)
-    else:
-        committed = git(toplevel, "show", f"HEAD:{CONFIG}")
-        if committed.returncode == 0:
-            file_config = json.loads(committed.stdout)
-            if not isinstance(file_config, dict) or not CASE_DIR.fullmatch(str(file_config.get("case", ""))):
-                raise ValueError(f"直前のコミットの {CONFIG} が不正です。")
-    if not case and file_config and (toplevel / CONFIG).is_file():
-        # 手で .ai-org.json を置いたリポジトリにも、git の設定を補う（以後はブランチに左右されない）
-        try:
-            record_in_git_config(toplevel, {"case": file_config["case"],
-                                            "data": str(file_config.get("data") or "")})
-            case = file_config["case"]
-        except (OSError, ValueError):
-            pass  # 補えなくても、.ai-org.json で判定を続ける
-    if case:
-        if not CASE_DIR.fullmatch(case):
-            raise ValueError("git の設定 ai-org.case が不正です。")
-        if file_config and file_config.get("case", "").lower() != case.lower():
-            raise ValueError(f"git の設定 ai-org.case と {CONFIG} の case が食い違っています。利用者に確認してください。")
-        data = git(toplevel, "config", "--local", "--get", "ai-org.data").stdout.strip()
-        return {"case": case, "data": data or (file_config or {}).get("data")}
-    return file_config
+    worktree = load_project(toplevel) if (toplevel / CONFIG).is_file() else None
+    head = None
+    committed = git(toplevel, "show", f"HEAD:{CONFIG}")
+    if committed.returncode == 0:
+        head = json.loads(committed.stdout)
+        if not isinstance(head, dict) or not CASE_DIR.fullmatch(str(head.get("case", ""))):
+            raise ValueError(f"直前のコミットの {CONFIG} が不正です。")
+    if case and not CASE_DIR.fullmatch(case):
+        raise ValueError("git の設定 ai-org.case が不正です。")
+    cases = {c.lower() for c in (case, (worktree or {}).get("case"), (head or {}).get("case")) if c}
+    if len(cases) > 1:
+        raise ValueError(f"git の設定 ai-org.case・作業ツリーの {CONFIG}・直前のコミットの {CONFIG} で案件が食い違っています。"
+                         "結び付けの変更は利用者に確認してください。")
+    if not cases:
+        return None
+    file_config = worktree or head or {}
+    data = git(toplevel, "config", "--local", "--get", "ai-org.data").stdout.strip()
+    return {"case": cases.pop(), "data": data or file_config.get("data"), "git_config": bool(case)}
+
+
+def resolve_data(binding):
+    """データフォルダー：結び付けの data → 環境変数 AI_ORG_DATA → 利用者の設定の data（全フックで同じ順）。"""
+    return (binding or {}).get("data") or os.environ.get("AI_ORG_DATA") or (load_policy() or {}).get("data")
 
 
 # git フック ---------------------------------------------------------------
@@ -280,13 +278,23 @@ def cmd_git_guard(args):
             print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
             return 1
         return 0  # 開発フォルダーの外、または除外したフォルダー
-    set_data(config.get("data") or os.environ.get("AI_ORG_DATA"))
+    data = resolve_data(config)
+    if not data:
+        print(f"[ai-org] {args.hook} を中止しました。データフォルダーが分からないため、編集権を確認できません。", file=sys.stderr)
+        return 1
+    set_data(data)
     reason = session_for(config["case"]).block_reason(os.environ.get("AI_ORG_TOKEN_FILE"))
     if reason:
         print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
         print("  AI_ORG_TOKEN_FILE に、ai-org start で表示されたトークンファイルを、git と同じコマンドの中で設定してください。"
               " 利用者自身の作業なら AI_ORG_SKIP_CLAIM_CHECK=1 で確認を省けます。", file=sys.stderr)
         return 1
+    if not config.get("git_config"):
+        # 編集権を確かめた後でだけ、手で置いた結び付けを git の設定にも残す（以後はブランチに左右されない）
+        try:
+            record_in_git_config(toplevel, {"case": config["case"], "data": str(data)})
+        except (OSError, ValueError):
+            pass
     print("[ai-org] 編集権を確認しました。")
     return 0
 
@@ -327,22 +335,20 @@ def claude_decision(payload):
             return "ROLES.json と .editing は AI が編集しません（担当予定は利用者が案件画面で、編集権は基盤のコマンドで管理します）。"
         data_root = case_folder.parent.parent  # 案件フォルダーの形から決める（設定や環境変数に頼らない）
     else:
-        project = find_project(target.parent)
-        if project is None:
-            # .ai-org.json がない作業ツリー（結び付ける前からあるブランチなど）でも、git の設定 ai-org.case か
-            # 直前のコミットの .ai-org.json があれば結び付いたリポジトリとして扱う（git フックと同じ根拠）
-            git_root = find_git_root(target.parent)
-            binding = binding_for(git_root) if git_root else None
-            if binding:
-                project = git_root
-        if project is not None and not (project / CONFIG).is_file():
+        # git フックと同じ判定（binding_for：git の設定・作業ツリー・直前のコミット、食い違えば止める）を使う
+        git_root = find_git_root(target.parent)
+        if git_root is not None:
+            try:
+                binding = binding_for(git_root)
+            except ValueError as error:
+                return f"編集を止めました：{error}"
+        else:
+            project = find_project(target.parent)  # git 管理でないフォルダー
+            binding = load_project(project) if project else None
+        if binding:
             case_id = binding["case"]
-            data_root = binding.get("data") or os.environ.get("AI_ORG_DATA")
-            if not data_root:
-                return "git の設定 ai-org.data がないため、編集権を確認できません。"
-        elif project is None:
-            if target.name != CONFIG:
-                return unregistered_reason(target, load_policy())
+            data_root = resolve_data(binding)
+        elif target.name == CONFIG:
             # 結び付け（.ai-org.json）を新しく書くときは、書く中身の案件で編集権を確かめる（register と同じ条件）
             try:
                 config = json.loads(tool_input.get("content") or "")
@@ -353,11 +359,9 @@ def claude_decision(payload):
             if not CASE_DIR.fullmatch(case_id) or not data_root:
                 return f"{CONFIG} の case か data が不正です。dev.py register で作ってください。"
         else:
-            config = load_project(project)
-            case_id = config["case"]
-            data_root = config.get("data") or os.environ.get("AI_ORG_DATA")
+            return unregistered_reason(target, load_policy())
         if not data_root:
-            return f"{project / CONFIG} に data（データフォルダー）がないため、編集権を確認できません。"
+            return "データフォルダーが分からないため、編集権を確認できません。"
     if payload.get("agent_id"):
         return "サブエージェントは、案件と結び付いたリポジトリと案件フォルダーに書き込みません（レビュー担当は review-note で返します）。"
     set_data(data_root)

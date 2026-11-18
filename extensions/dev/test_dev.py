@@ -284,6 +284,37 @@ class DevExtensionTests(unittest.TestCase):
         self.assertEqual(self.commit(dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))).returncode, 0)
         self.assertEqual(run("git", "config", "--get", "ai-org.case", cwd=self.repo).stdout.strip(), self.case_id)
 
+    def test_wrong_case_in_worktree_is_not_persisted(self):
+        # Codex 指摘1：編集権の確認前に、作業ツリーの誤った案件を git の設定へ書かない
+        token_file = self.start()
+        holder = dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))
+        self.assertEqual(run("git", "config", "--unset", "ai-org.case", cwd=self.repo).returncode in (0, 5), True)
+        self.assertEqual(self.commit(holder).returncode, 0)  # HEAD に案件 A の .ai-org.json
+        run("git", "config", "--unset", "ai-org.case", cwd=self.repo)
+        run("git", "config", "--unset", "ai-org.data", cwd=self.repo)
+        config = json.loads((self.repo / ".ai-org.json").read_text(encoding="utf-8"))
+        config["case"] = "case-" + "1" * 32
+        (self.repo / ".ai-org.json").write_text(json.dumps(config), encoding="utf-8")
+        self.assertNotEqual(self.commit(self.env).returncode, 0)
+        self.assertEqual(run("git", "config", "--get", "ai-org.case", cwd=self.repo).stdout.strip(), "")
+
+    def test_claude_and_git_agree_on_mismatch_and_policy_data(self):
+        # Codex 指摘2：git の設定と .ai-org.json が食い違えば、Claude Code 側も止める
+        run("git", "config", "--local", "ai-org.case", "case-" + "2" * 32, cwd=self.repo)
+        temp, token_file = self.scratch_token("sess-m")
+        Session(self.case_id, self.store).start("Claude", token_file)
+        with mock.patch("tempfile.gettempdir", return_value=str(temp)):
+            reason = self.claude({"session_id": "sess-m", "tool_input": {"file_path": str(self.repo / "a.txt")}})
+        self.assertIn("食い違", reason)
+        # git の設定だけで data がなく、利用者の設定の data で決まる場合も、保持者は書ける
+        run("git", "config", "--local", "ai-org.case", self.case_id, cwd=self.repo)
+        (self.repo / ".ai-org.json").unlink()
+        run("git", "rm", "-q", "--cached", ".ai-org.json", cwd=self.repo)
+        env = {k: v for k, v in os.environ.items() if k != "AI_ORG_DATA"}
+        env["AI_ORG_CONFIG"] = str(self.write_policy(dev_roots=[str(self.root / "elsewhere")]))
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch("tempfile.gettempdir", return_value=str(temp)):
+            self.assertIsNone(self.claude({"session_id": "sess-m", "tool_input": {"file_path": str(self.repo / "a.txt")}}))
+
     def test_git_config_and_file_mismatch_blocks(self):
         token_file = self.start()
         run("git", "config", "--local", "ai-org.case", "case-" + "0" * 32, cwd=self.repo)

@@ -66,9 +66,9 @@
 ### 版を上げるとき
 
 1. 新しいタグを `%LOCALAPPDATA%\ai-org\<版>` に clone し、その場で `python tools/check.py` を通す。
-2. 次の5か所の版のフォルダーを書き換える：データフォルダーの `ai-org-home.txt`、`%USERPROFILE%\.ai-org\config.json` の home、git の共通設定 `core.hooksPath`、`~/.claude/settings.json` のフックの args、`~/.claude/CLAUDE.md` と `~/.codex/AGENTS.md` のパス。
+2. 次の6か所の版のフォルダーを書き換える：(1) データフォルダーの `ai-org-home.txt`、(2) `%USERPROFILE%\.ai-org\config.json` の home、(3) git の共通設定 `core.hooksPath`、(4) `~/.claude/settings.json` のフックの args、(5) `~/.claude/CLAUDE.md` のパス、(6) `~/.codex/AGENTS.md` のパス。
 3. 中継（データフォルダーの `*.py`）を新しい版の `legacy/forward.py` で更新する。
-4. 戻すときは、2 の5か所を前の版に戻す。前の版のフォルダーは残しておく。
+4. 戻すときは、2 の6か所を前の版に戻し、3 の中継も前の版の `legacy/forward.py` で置き直す。前の版のフォルダーは残しておく。
 
 ### レビュー（段階1）
 

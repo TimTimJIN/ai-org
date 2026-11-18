@@ -1,9 +1,11 @@
 """案件の写し（人が読むための一覧）を Markdown で作る（中核）。
 
 正本はデータフォルダーの案件記録。この写しは Notion・Google Drive などに貼るためのもので、外部への書き込みはしない
-（書き込みは、利用者の指示を受けた担当がコネクターなどで行う）。トークンやログは含めない。
+（書き込みは、利用者の指示を受けた担当がコネクターなどで行う）。トークンや照合用の値、ログ、エラーの詳細は含めない。
+案件フォルダーの外を指すファイル（リンクなど）は読まない。STATUS の欄は長さを切り詰める。
 """
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import re
 
@@ -11,27 +13,42 @@ from case_editing import CaseEditing
 from workspace_hub import CaseStore
 
 STATUS_LINE = re.compile(r"^(状態|担当|更新)[：:]\s*(.+)$")
+MAX_CELL = 200
+HEADER = "# 案件の一覧"
+
+
+def read_inside(folder, name):
+    """案件フォルダーの中の通常のファイルだけを読む（リンクで外を指していれば読まない）。読めなければ None。"""
+    path = Path(folder) / name
+    try:
+        if path.is_symlink() or not path.resolve().is_relative_to(Path(folder).resolve()):
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, ValueError):  # UnicodeDecodeError も ValueError
+        return None
 
 
 def status_summary(folder):
     """STATUS.md の冒頭から「状態」「担当」「更新」を取り出す。"""
     summary = {}
-    try:
-        lines = (Path(folder) / "STATUS.md").read_text(encoding="utf-8").splitlines()[:15]
-    except OSError:
-        return summary
-    for line in lines:
+    text = read_inside(folder, "STATUS.md")
+    for line in (text or "").splitlines()[:15]:
         match = STATUS_LINE.match(line.strip())
         if match and match.group(1) not in summary:
             summary[match.group(1)] = match.group(2).strip()
     return summary
 
 
+def cell(text):
+    text = str(text).replace("|", "／").replace("\r", " ").replace("\n", " ")
+    return text if len(text) <= MAX_CELL else text[:MAX_CELL] + "…"
+
+
 def build_report(store=None, now=None):
     store = store or CaseStore()
     cases, warnings = store.list()
     stamp = (now or datetime.now(timezone.utc)).astimezone().strftime("%Y-%m-%d %H:%M")
-    lines = [f"# 案件の一覧（{stamp} 時点の写し）", "",
+    lines = [f"{HEADER}（{stamp} 時点の写し）", "",
              "正本はデータフォルダーの案件記録。この一覧は写しで、ここを編集しても案件には反映されない。", "",
              "| 案件 | 状態（STATUS） | 進行 | 編集権 | 担当予定 | STATUS の更新 | レビュー記録 |",
              "| --- | --- | --- | --- | --- | --- | --- |"]
@@ -45,18 +62,32 @@ def build_report(store=None, now=None):
             owner = editing.current()
             progress = "停止中" if control["state"] == "paused" else "進行可"
             holder = owner["agent"] if owner else "空き"
-        except (OSError, ValueError) as error:
-            progress, holder = "記録を読めない", str(error)
+        except (OSError, ValueError):
+            progress, holder = "記録を読めない", "不明"
         try:
-            import json
-            roles = json.loads((folder / "ROLES.json").read_text(encoding="utf-8"))
+            roles = json.loads(read_inside(folder, "ROLES.json") or "")
             planned = f"実装 {roles.get('implementer', '?')}／レビュー {roles.get('reviewer', '?')}"
-        except (OSError, ValueError, AttributeError):
+        except (ValueError, AttributeError):
             planned = "未設定"
         reviews = len(list((folder / "reviews").glob("*.json"))) if (folder / "reviews").is_dir() else 0
-        cell = lambda text: str(text).replace("|", "／").replace("\n", " ")
         lines.append(f"| {cell(task['title'])}<br>`{case_id}` | {cell(summary.get('状態', '（STATUS なし）'))} | "
                      f"{progress} | {cell(holder)} | {cell(planned)} | {cell(summary.get('更新', '—'))} | {reviews} 件 |")
     if warnings:
-        lines += ["", "## 読み取れなかった案件", ""] + [f"- {warning}" for warning in warnings]
+        # 詳細（パスやエラー文）は写しに載せない
+        lines += ["", f"読み取れなかった案件が {len(warnings)} 件あります（詳細はデータフォルダーで確認）。"]
     return "\n".join(lines) + "\n"
+
+
+def write_report(text, out, data_root):
+    """写しをファイルに書く。データフォルダーの中には書かない。既存のファイルは、この一覧の写しのときだけ上書きする。"""
+    path = Path(out).resolve()
+    if path.is_relative_to(Path(data_root).resolve()):
+        raise ValueError("写しはデータフォルダーの中には書きません（案件記録を壊さないため）。別の場所を指定してください。")
+    if path.exists():
+        try:
+            first = path.read_text(encoding="utf-8").splitlines()[:1]
+        except (OSError, ValueError):
+            first = []
+        if not first or not first[0].startswith(HEADER):
+            raise ValueError(f"{path} は案件一覧の写しではないため、上書きしません。")
+    path.write_text(text, encoding="utf-8")
