@@ -2,6 +2,9 @@
 from knowledge import add, export, records
 from data_root import data_root
 
+if __name__ != '__main__':
+    raise ImportError('seed_knowledge はコマンドとして実行するスクリプトです（import すると記録を作るため止める）。')
+
 root = data_root() / 'data' / 'knowledge'
 base = dict(case='autonomous-team', source='2026-11-16 本チャット', author='Codex')
 items = [
