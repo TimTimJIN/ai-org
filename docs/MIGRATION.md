@@ -63,6 +63,12 @@
 - 動作確認：開発フォルダーに一時的な未登録リポジトリを作り、Claude Code の Write と git commit がどちらも止まることを確かめてから消した。ai-org とスワイプのリポジトリでは、編集権を持つ会話のコミットが通ることを確かめた。
 - スワイプ案件（段階4）：`dev.py register` で `.ai-org.json` と git の設定を書き、リポジトリ単位の `core.hooksPath`（.githooks）を外し、手元専用の試作フックを消した。スワイプ案件に置いていたカイゼンの試作・レビューの記録は、ai-org 案件の `history/kaizen-from-swipe-20261118` に移した（ハッシュ一致を確認）。
 
+## v0.2.1（2026-11-18）
+
+- 内容：v0.2.0 最終レビューの軽微3件（編集前フックも git の設定で結び付けを判定、手で置いた結び付けを編集権の確認後に git の設定へ補う、確認が2回動くのは意図）、`report` コマンド。
+- Codex レビュー（codex exec、ChatGPT アカウント、読み取り専用。記録は Claude Code が代行）：c87fd7a2…（重大3）→ 33b1bea3…（重大1・中1、前回の5件解消）→ 0026c2f8…（前回の新指摘は解消。残る2件は限界として扱った：report は既定で自由記述を載せない形にし、fast-forward のマージはコミットを作らないため git のフックでは止められないと README に記載）。
+- 切り替え：v0.2.1（58664db）をローカルのリポジトリから `%LOCALAPPDATA%\ai-org\v0.2.1` に clone（GitHub への push は Claude Code の自動判定で止められたため、利用者に依頼）。テスト112件成功。6か所の設定と中継を v0.2.1 に更新。未登録の一時リポジトリで、Claude Code の Write と git commit が止まることを確認してから消した。
+
 ### 版を上げるとき
 
 1. 新しいタグを `%LOCALAPPDATA%\ai-org\<版>` に clone し、その場で `python tools/check.py` を通す。
