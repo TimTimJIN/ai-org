@@ -97,16 +97,19 @@ def unregistered_reason(path, policy):
 
 
 # パスの正規化と案件フォルダーの判定 -----------------------------------------
-LOCAL_UNC = re.compile(r"^\\\\(?:localhost|127\.0\.0\.1|\.|\?)\\(?:UNC\\(?:localhost|127\.0\.0\.1)\\)?([A-Za-z])\$(\\.*)?$",
-                       re.IGNORECASE)
+def local_unc_pattern():
+    import socket
+    hosts = ["localhost", r"127\.0\.0\.1", r"\[::1\]", re.escape(socket.gethostname())]
+    host = "(?:" + "|".join(hosts) + ")"
+    return re.compile(r"^\\\\(?:" + host + r"|\.|\?)\\(?:UNC\\" + host + r"\\)?([A-Za-z])\$(\\.*)?$", re.IGNORECASE)
 
 
 def normalize(raw):
-    """\\\\?\\C:\\…、\\\\localhost\\C$\\… などを通常の形に直してから解決する。"""
+    """\\\\?\\C:\\…、\\\\localhost\\C$\\…、\\\\<このPCの名前>\\C$\\… などを通常の形に直してから解決する。"""
     text = str(raw).replace("/", "\\")
     if text.startswith("\\\\?\\") and len(text) > 6 and text[5] == ":":
         text = text[4:]
-    match = LOCAL_UNC.match(text)
+    match = local_unc_pattern().match(text)
     if match:
         text = match.group(1) + ":" + (match.group(2) or "\\")
     return Path(os.path.realpath(text))
@@ -129,7 +132,8 @@ def git(project, *args):
 def cmd_finish(args):
     project = Path(args.project).resolve()
     config = load_project(project)
-    set_data(os.environ.get("AI_ORG_DATA") or config.get("data"))
+    # データフォルダーの優先順位は全コマンドで同じ：.ai-org.json の data → 環境変数 AI_ORG_DATA
+    set_data(config.get("data") or os.environ.get("AI_ORG_DATA"))
     session = session_for(config["case"])
     # 編集権の照合を最初に行う（編集権のない会話に検証コマンドを動かさせない）
     from session import token_matches
@@ -215,14 +219,24 @@ def cmd_git_guard(args):
         print(f"[ai-org] {args.hook} を中止しました。リポジトリの場所を確認できません。", file=sys.stderr)
         return 1
     toplevel = Path(top.stdout.strip())
-    if not (toplevel / CONFIG).is_file():
-        reason = unregistered_reason(toplevel, load_policy())
-        if reason:
-            print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
-            return 1
-        return 0  # 開発フォルダーの外、または除外したフォルダー
-    config = load_project(toplevel)
-    set_data(os.environ.get("AI_ORG_DATA") or config.get("data"))
+    if (toplevel / CONFIG).is_file():
+        config = load_project(toplevel)
+    else:
+        # 作業ツリーになくても、直前のコミットにあれば結び付いたリポジトリとして扱う
+        # （.ai-org.json を消すコミットや revert で確認を外せないようにする）
+        committed = git(toplevel, "show", f"HEAD:{CONFIG}")
+        if committed.returncode == 0:
+            config = json.loads(committed.stdout)
+            if not isinstance(config, dict) or not CASE_DIR.fullmatch(str(config.get("case", ""))):
+                print(f"[ai-org] {args.hook} を中止しました。直前のコミットの {CONFIG} が不正です。", file=sys.stderr)
+                return 1
+        else:
+            reason = unregistered_reason(toplevel, load_policy())
+            if reason:
+                print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
+                return 1
+            return 0  # 開発フォルダーの外、または除外したフォルダー
+    set_data(config.get("data") or os.environ.get("AI_ORG_DATA"))
     reason = session_for(config["case"]).block_reason(os.environ.get("AI_ORG_TOKEN_FILE"))
     if reason:
         print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
@@ -263,12 +277,21 @@ def claude_decision(payload):
     else:
         project = find_project(target.parent)
         if project is None:
-            if target.name == CONFIG:
-                return None  # 結び付け（.ai-org.json）を書くのは許す。中身の案件の編集権は register と各フックで確かめる
-            return unregistered_reason(target, load_policy())
-        config = load_project(project)
-        case_id = config["case"]
-        data_root = config.get("data") or os.environ.get("AI_ORG_DATA")
+            if target.name != CONFIG:
+                return unregistered_reason(target, load_policy())
+            # 結び付け（.ai-org.json）を新しく書くときは、書く中身の案件で編集権を確かめる（register と同じ条件）
+            try:
+                config = json.loads(tool_input.get("content") or "")
+                case_id = str(config.get("case", ""))
+                data_root = config.get("data")
+            except (ValueError, AttributeError):
+                return f"{CONFIG} の中身を読み取れません。dev.py register で作ってください。"
+            if not CASE_DIR.fullmatch(case_id) or not data_root:
+                return f"{CONFIG} の case か data が不正です。dev.py register で作ってください。"
+        else:
+            config = load_project(project)
+            case_id = config["case"]
+            data_root = config.get("data") or os.environ.get("AI_ORG_DATA")
         if not data_root:
             return f"{project / CONFIG} に data（データフォルダー）がないため、編集権を確認できません。"
     if payload.get("agent_id"):

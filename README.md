@@ -63,8 +63,11 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
  "status_files": ["STATUS.md"], "check": ["powershell", "-NoProfile", "-File", "tools/check.ps1"]}
 ```
 
-- git フック：`git config core.hooksPath <使う版>/extensions/dev/githooks`。コミット・push の前に、環境変数 `AI_ORG_TOKEN_FILE` のトークンを照合し、停止中・編集権なし・方針確認前・記録が壊れているときは止める。利用者自身の作業は `AI_ORG_SKIP_CLAIM_CHECK=1` で確認を省ける。
-  - リポジトリ固有のフックは、すべての種類（pre-commit、commit-msg、pre-push など）を続けて呼ぶ。呼ぶ先は共通の `.git/hooks`（worktree でも同じ）。以前から `core.hooksPath` で別の置き場を使っていたリポジトリは、その場所を `git config ai-org.chainHooksPath <置き場>` に移す。
+- git フック：`git config core.hooksPath <使う版>/extensions/dev/githooks`。コミット（prepare-commit-msg）と push（pre-push）の前に、環境変数 `AI_ORG_TOKEN_FILE` のトークンを照合し、停止中・編集権なし・方針確認前・記録が壊れているときは止める。利用者自身の作業は `AI_ORG_SKIP_CLAIM_CHECK=1` で確認を省ける。
+  - prepare-commit-msg は、通常のコミット、マージ、cherry-pick、revert のすべてで呼ばれ、`--no-verify` でも飛ばされない。
+  - 作業ツリーに `.ai-org.json` がなくても、直前のコミットにあれば結び付いたリポジトリとして扱う（結び付けを消すコミットで確認を外せない）。
+  - リポジトリ固有のフックは、クライアント側・サーバー側の主な種類を続けて呼ぶ。呼ぶ先は共通の `.git/hooks`（worktree でも同じ）。以前から `core.hooksPath` で別の置き場を使っていたリポジトリは、その場所を `git config ai-org.chainHooksPath <置き場>` に移す。置き場が見つからないときは注意を表示する。
+  - 頻繁に動く reference-transaction と post-index-change は、git の操作が大きく遅くなるため包まない。git の共通設定で ai-org のフックを使うと、これら2種類のリポジトリ固有のフックは動かない。
   - リポジトリで `core.hooksPath` を個別に設定していると、git の共通設定より優先され、ai-org のフックは動かない。
 - Claude Code の編集前フック：PreToolUse（Edit／Write／NotebookEdit）で `python <使う版>/extensions/dev/dev.py claude-guard` を呼ぶ。設定では `"command": "python"`、`"args": [<dev.py のパス>, "claude-guard"]`、`"onFailure": "block"` とし、フック自体が動かないときも止める（`onFailure` に対応した Claude Code の版が必要）。
   - 案件と結び付いたリポジトリと案件フォルダーへの書き込みを、その会話が編集権を持つときだけ許す。案件フォルダーは、データフォルダーの設定に頼らず `…\cases\case-<32桁>\` の形で見分ける。`\\?\` や `\\localhost\C$\` の形のパスも通常の形に直してから判定する。

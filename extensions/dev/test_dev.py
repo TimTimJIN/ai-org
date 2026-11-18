@@ -99,8 +99,37 @@ class DevExtensionTests(unittest.TestCase):
         (self.repo / ".ai-org.json").unlink()
         with mock.patch.dict(os.environ, {"AI_ORG_CONFIG": str(self.write_policy())}):
             self.assertIn("案件と結び付いていない", self.claude({"session_id": "s", "tool_input": {"file_path": str(self.repo / "a.py")}}))
-            self.assertIsNone(self.claude({"session_id": "s", "tool_input": {"file_path": str(self.repo / ".ai-org.json")}}))
+            # .ai-org.json を新しく書くときは、中身の案件の編集権を確かめる
+            content = json.dumps({"case": self.case_id, "data": str(self.data)})
+            target = str(self.repo / ".ai-org.json")
+            self.assertIsNotNone(self.claude({"session_id": "s", "tool_input": {"file_path": target, "content": content}}))
+            self.assertIsNotNone(self.claude({"session_id": "s", "tool_input": {"file_path": target, "content": "{}"}}))
+            temp, token_file = self.scratch_token("sess-reg")
+            Session(self.case_id, self.store).start("Claude", token_file)
+            with mock.patch("tempfile.gettempdir", return_value=str(temp)):
+                self.assertIsNone(self.claude({"session_id": "sess-reg", "tool_input": {"file_path": target, "content": content}}))
             self.assertIsNone(self.claude({"session_id": "s", "tool_input": {"file_path": str(self.root.parent / "x.txt")}}))
+
+    def test_merge_cherry_pick_revert_and_no_verify_are_guarded(self):
+        token_file = self.start()
+        holder = dict(self.env, AI_ORG_TOKEN_FILE=str(token_file))
+        self.assertEqual(self.commit(holder).returncode, 0)
+        run("git", "checkout", "-q", "-b", "side", cwd=self.repo)
+        self.assertEqual(self.commit(holder).returncode, 0)
+        run("git", "checkout", "-q", "-", cwd=self.repo)
+        # 編集権を返した後は、どの経路でもコミットを作れない
+        Session(self.case_id, self.store).finish(token_file, status_unchanged=True)
+        before = run("git", "rev-parse", "HEAD", cwd=self.repo).stdout
+        for args in (["cherry-pick", "side"], ["merge", "--no-ff", "--no-edit", "side"], ["revert", "--no-edit", "HEAD"]):
+            run("git", *args, cwd=self.repo, env=self.env)
+            # どの操作でもコミットが増えないこと（終了コードは git の操作ごとに違うため、HEAD で確かめる）
+            self.assertEqual(run("git", "rev-parse", "HEAD", cwd=self.repo).stdout, before, args)
+            run("git", args[0], "--abort", cwd=self.repo, env=self.env)
+            run("git", "reset", "-q", "--hard", "HEAD", cwd=self.repo, env=self.env)
+        (self.repo / "f.txt").write_text("nv", encoding="utf-8")
+        run("git", "add", "-A", cwd=self.repo)
+        self.assertNotEqual(run("git", "commit", "-q", "--no-verify", "-m", "nv", cwd=self.repo, env=self.env).returncode, 0)
+        self.assertEqual(run("git", "rev-parse", "HEAD", cwd=self.repo).stdout, before)
 
     def test_register_requires_claim(self):
         (self.repo / ".ai-org.json").unlink()
@@ -195,7 +224,9 @@ class DevExtensionTests(unittest.TestCase):
     def test_claude_guard_normalizes_special_path_forms(self):
         case = self.store.folder(self.case_id)
         drive, rest = str(case / "ROLES.json").split(":", 1)
+        import socket
         for form in ("\\\\?\\" + str(case / "ROLES.json"), f"\\\\localhost\\{drive}$" + rest,
+                     f"\\\\{socket.gethostname()}\\{drive}$" + rest,
                      f"\\\\127.0.0.1\\{drive}$" + rest, str(case / "ROLES.json").replace("\\", "/")):
             self.assertIn("ROLES.json", self.claude({"session_id": "x", "tool_input": {"file_path": form}}), form)
 
