@@ -65,6 +65,18 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 - Claude Code の編集前フック：PreToolUse（Edit／Write／NotebookEdit）で `python <使う版>/extensions/dev/dev.py claude-guard` を、`onFailure: block` で呼ぶ。案件と結び付いたリポジトリと案件フォルダーへの書き込みを、その会話が編集権を持つときだけ許す。サブエージェントの書き込み、ROLES.json と `.editing` への書き込みは常に止める。想定外のエラーでも止める。
 - 終了：`python <使う版>/extensions/dev/dev.py finish --project <リポジトリ> --token-file <パス>`。検証コマンド、リポジトリの STATUS、未コミットの確認の後、中核の finish を呼ぶ。
 
+### 必須化（利用者の設定）
+
+`%USERPROFILE%\.ai-org\config.json`（環境変数 `AI_ORG_CONFIG` で場所を変えられる）がある場合だけ働く。
+
+```json
+{"dev_roots": ["C:\\Users\\…\\2_programing\\git"], "exclude": [], "data": "C:\\…\\app-relay"}
+```
+
+- `dev_roots` の下で、案件と結び付いていない（`.ai-org.json` がない）リポジトリへの書き込み（Claude Code）とコミット・push（git フック）を止める。`exclude` の下と、`dev_roots` の外には効かない。
+- 新しい開発の始め方：下書きを受信箱に置く → 利用者が案件画面で確定 → `ai_org.py start` → `python <使う版>/extensions/dev/dev.py register --project <リポジトリ> --case <案件ID> --token-file <パス> [--status-file STATUS.md] [--check-json "[…]"]`。register は、その案件の編集権を持つ会話だけが行え、既存の `.ai-org.json` は上書きしない。
+- 全リポジトリに効かせるには、git の共通設定 `core.hooksPath` を `<使う版>/extensions/dev/githooks` に、Claude Code のユーザー設定に編集前フックを入れる。いずれも利用者の設定の変更なので、項目ごとに利用者の確認を得る（`docs/MIGRATION.md` の段階3）。
+
 ### 防げない範囲
 
 - 同じ Windows ユーザーで動く会話どうしは、互いのトークンファイルを読める。防げるのは、取り忘れ・返却後の書き込み・別の会話が保持中の書き込み・異常終了した会話からの自動引き継ぎといった事故で、故意のなりすましは防げない。
@@ -75,6 +87,5 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 ## テスト
 
 ```bash
-cd hub && python -m unittest discover -p "test_*.py"
-cd extensions/dev && python -m unittest test_dev
+python tools/check.py
 ```

@@ -53,6 +53,41 @@ def use_data(config_data=None):
         os.environ["AI_ORG_DATA"] = str(config_data)
 
 
+# 必須化の方針（利用者の設定 %USERPROFILE%\.ai-org\config.json） ------------------
+#   {"dev_roots": ["C:\\…\\2_programing\\git"], "exclude": ["C:\\…\\dotfiles"], "data": "C:\\…\\app-relay"}
+# dev_roots の下にあって、案件と結び付いていない（.ai-org.json がない）リポジトリへの書き込み・コミット・push を止める。
+# exclude に書いたフォルダーの下は対象外。設定ファイルがなければ、必須化は働かない。
+def load_policy():
+    path = Path(os.environ.get("AI_ORG_CONFIG") or Path.home() / ".ai-org" / "config.json")
+    if not path.is_file():
+        return None
+    policy = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(policy, dict):
+        raise ValueError(f"{path} の形式が不正です。")
+    return policy
+
+
+def is_under(path, root):
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def unregistered_reason(path, policy):
+    if not policy:
+        return None
+    if any(is_under(path, folder) for folder in policy.get("exclude", [])):
+        return None
+    if any(is_under(path, root) for root in policy.get("dev_roots", [])):
+        return ("案件と結び付いていない開発リポジトリです。新しい開発は案件から始めます："
+                "下書きを受信箱に置いて利用者が案件画面で確定し、ai-org start で編集権を取ってから、"
+                "dev.py register でリポジトリを案件に結び付けてください。開発ではないフォルダーなら、"
+                "利用者が設定の exclude に加えます。")
+    return None
+
+
 def session_for(case_id):
     from session import Session
     return Session(case_id)
@@ -107,16 +142,47 @@ def cmd_finish(args):
     return 0
 
 
+# register ---------------------------------------------------------------
+def cmd_register(args):
+    """開発リポジトリを案件に結び付ける（.ai-org.json を書く）。その案件の編集権を持つ会話だけが行える。"""
+    project = Path(args.project).resolve()
+    if (project / CONFIG).exists():
+        raise ValueError(f"{project / CONFIG} はすでにあります。結び付けを変えるときは利用者に確認してください。")
+    policy = load_policy() or {}
+    data = os.environ.get("AI_ORG_DATA") or policy.get("data")
+    if not data:
+        raise ValueError("データフォルダーが分かりません。AI_ORG_DATA か設定の data を指定してください。")
+    use_data(data)
+    reason = session_for(args.case).block_reason(args.token_file)
+    if reason:
+        raise ValueError(reason)
+    check = json.loads(args.check_json) if args.check_json else []
+    if not isinstance(check, list) or not all(isinstance(part, str) for part in check):
+        raise ValueError("--check-json は文字列の配列で指定してください。")
+    config = {"case": args.case, "data": str(Path(data).resolve()), "status_files": args.status_file or [],
+              "check": check}
+    (project / CONFIG).write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"[ai-org] {project} を案件 {args.case} に結び付けました（{CONFIG}）。コミットに含めてください。")
+    return 0
+
+
 # git フック ---------------------------------------------------------------
 def cmd_git_guard(args):
     if os.environ.get("AI_ORG_SKIP_CLAIM_CHECK") == "1":
         print("[ai-org] AI_ORG_SKIP_CLAIM_CHECK=1 のため、編集権の確認を省きました。")
         return 0
     top = git(Path.cwd(), "rev-parse", "--show-toplevel")
-    project = find_project(top.stdout.strip()) if top.returncode == 0 else None
-    if project is None or not (project / CONFIG).is_file():
-        # 案件と結び付いていないリポジトリ。必須化（段階3）までは止めない。
-        return 0
+    if top.returncode != 0:
+        print(f"[ai-org] {args.hook} を中止しました。リポジトリの場所を確認できません。", file=sys.stderr)
+        return 1
+    toplevel = Path(top.stdout.strip())
+    project = toplevel if (toplevel / CONFIG).is_file() else None
+    if project is None:
+        reason = unregistered_reason(toplevel, load_policy())
+        if reason:
+            print(f"[ai-org] {args.hook} を中止しました。{reason}", file=sys.stderr)
+            return 1
+        return 0  # 開発フォルダーの外、または除外したフォルダー
     config = load_project(project)
     use_data(config.get("data"))
     reason = session_for(config["case"]).block_reason(os.environ.get("AI_ORG_TOKEN_FILE"))
@@ -165,7 +231,8 @@ def claude_decision(payload, data_arg=None):
     target = Path(raw).resolve()
     project = find_project(target.parent if not target.is_dir() else target)
     config = load_project(project) if project else None
-    data_root = os.environ.get("AI_ORG_DATA") or (config or {}).get("data") or data_arg
+    policy = load_policy()
+    data_root = os.environ.get("AI_ORG_DATA") or (config or {}).get("data") or data_arg or (policy or {}).get("data")
     case_id, case_folder = locate_case(target, data_root)
     if case_id:
         relative = target.relative_to(case_folder)
@@ -173,8 +240,10 @@ def claude_decision(payload, data_arg=None):
             return "ROLES.json と .editing は AI が編集しません（担当予定は利用者が案件画面で、編集権は基盤のコマンドで管理します）。"
     elif config:
         case_id = config["case"]
+    elif target.name == CONFIG:
+        return None  # 案件との結び付け（.ai-org.json）を書くのは許す。中身の案件で編集権を確かめるのは register と各フック
     else:
-        return None  # 案件にも、案件と結び付いたリポジトリにも属さない（必須化は段階3）
+        return unregistered_reason(target, policy)
     if payload.get("agent_id"):
         return "サブエージェントは、案件と結び付いたリポジトリと案件フォルダーに書き込みません（レビュー担当は review-note で返します）。"
     if data_root:
@@ -214,14 +283,22 @@ def main(argv=None):
     g.add_argument("hook", choices=["commit", "push"])
     c = sub.add_parser("claude-guard")
     c.add_argument("--data", default=None)
+    r = sub.add_parser("register")
+    r.add_argument("--project", default=".")
+    r.add_argument("--case", required=True)
+    r.add_argument("--token-file", default=os.environ.get("AI_ORG_TOKEN_FILE") or None)
+    r.add_argument("--status-file", action="append")
+    r.add_argument("--check-json", default=None)
     args = parser.parse_args(argv)
     if args.command == "claude-guard":
         return cmd_claude_guard(args)
     try:
+        if args.command in ("finish", "register") and not args.token_file:
+            raise ValueError("--token-file か AI_ORG_TOKEN_FILE を指定してください。")
         if args.command == "finish":
-            if not args.token_file:
-                raise ValueError("--token-file か AI_ORG_TOKEN_FILE を指定してください。")
             return cmd_finish(args)
+        if args.command == "register":
+            return cmd_register(args)
         return cmd_git_guard(args)
     except (OSError, ValueError) as error:
         print(f"[ai-org] 中止：{error}", file=sys.stderr)

@@ -45,7 +45,8 @@ class DevExtensionTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def commit(self, env):
-        (self.repo / "f.txt").write_text(str(len(list(self.repo.iterdir()))), encoding="utf-8")
+        self.counter = getattr(self, "counter", 0) + 1
+        (self.repo / "f.txt").write_text(str(self.counter), encoding="utf-8")
         run("git", "add", "-A", cwd=self.repo)
         return run("git", "commit", "-q", "-m", "x", cwd=self.repo, env=env)
 
@@ -68,9 +69,50 @@ class DevExtensionTests(unittest.TestCase):
         result = self.commit(dict(self.env, AI_ORG_SKIP_CLAIM_CHECK="1"))
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_unregistered_repository_is_not_blocked_yet(self):
+    def test_unregistered_repository_is_not_blocked_without_policy(self):
         (self.repo / ".ai-org.json").unlink()
-        self.assertEqual(self.commit(self.env).returncode, 0)
+        env = dict(self.env, AI_ORG_CONFIG=str(self.root / "no-config.json"))
+        self.assertEqual(self.commit(env).returncode, 0)
+
+    def write_policy(self, **extra):
+        path = self.root / "config.json"
+        policy = {"dev_roots": [str(self.root)], "data": str(self.data)}
+        policy.update(extra)
+        path.write_text(json.dumps(policy), encoding="utf-8")
+        return path
+
+    def test_policy_blocks_unregistered_repository_under_dev_root(self):
+        (self.repo / ".ai-org.json").unlink()
+        env = dict(self.env, AI_ORG_CONFIG=str(self.write_policy()))
+        result = self.commit(env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("案件と結び付いていない", result.stderr)
+        excluded = dict(self.env, AI_ORG_CONFIG=str(self.write_policy(exclude=[str(self.repo)])))
+        self.assertEqual(self.commit(excluded).returncode, 0)
+        outside = dict(self.env, AI_ORG_CONFIG=str(self.write_policy(dev_roots=[str(self.root / "elsewhere")])))
+        self.assertEqual(self.commit(outside).returncode, 0)
+
+    def test_policy_blocks_claude_writes_in_unregistered_repo_but_allows_registration_file(self):
+        (self.repo / ".ai-org.json").unlink()
+        with mock.patch.dict(os.environ, {"AI_ORG_CONFIG": str(self.write_policy())}):
+            self.assertIn("案件と結び付いていない", self.claude({"session_id": "s", "tool_input": {"file_path": str(self.repo / "a.py")}}))
+            self.assertIsNone(self.claude({"session_id": "s", "tool_input": {"file_path": str(self.repo / ".ai-org.json")}}))
+            self.assertIsNone(self.claude({"session_id": "s", "tool_input": {"file_path": str(self.root.parent / "x.txt")}}))
+
+    def test_register_requires_claim(self):
+        (self.repo / ".ai-org.json").unlink()
+        with mock.patch.dict(os.environ, {"AI_ORG_CONFIG": str(self.write_policy())}):
+            args = ["register", "--project", str(self.repo), "--case", self.case_id, "--status-file", "STATUS.md",
+                    "--check-json", '["python", "-V"]', "--token-file", str(self.root / "none.token")]
+            self.assertEqual(dev.main(args), 1)
+            self.assertFalse((self.repo / ".ai-org.json").exists())
+            token_file = self.start()
+            args[-1] = str(token_file)
+            self.assertEqual(dev.main(args), 0)
+            config = json.loads((self.repo / ".ai-org.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["case"], self.case_id)
+            self.assertEqual(config["check"], ["python", "-V"])
+            self.assertEqual(dev.main(args), 1)  # 既にある結び付けは上書きしない
 
     def test_local_hook_is_chained(self):
         hook = self.repo / ".git" / "hooks" / "pre-commit"

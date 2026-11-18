@@ -1,0 +1,9 @@
+{
+  "case": "case-548945667cd645a5a2c60cb03a5f7b56",
+  "data": "C:\\Users\\hikar\\Documents\\ChatGPT\\AI駆動×AI駆動\\app-relay",
+  "status_files": [],
+  "check": [
+    "python",
+    "tools/check.py"
+  ]
+}
