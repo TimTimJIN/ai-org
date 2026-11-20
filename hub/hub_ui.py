@@ -11,6 +11,57 @@ from workspace_hub import CaseStore
 PLAN_BY_LABEL = {plan_label(plan): plan for plan in ROLE_PLANS}
 FONT = "Yu Gothic UI"
 
+# Colours follow docs/DESIGN.md (contrast checked: text 4.5:1, borders 3:1).
+BG, TEXT, SUBTLE, BORDER = "#f4f6fa", "#172b42", "#526579", "#7b8794"
+PRIMARY, PRIMARY_HOVER = "#0b5cad", "#094a8c"
+SELECT_BG, SELECT_FG = "#e8f1fb", "#0b5cad"
+TONES = {  # status tone -> (text colour, badge background)
+    "ok": ("#1d6b3a", "#e6f4ea"),
+    "wait": ("#8a4b00", "#fdf1e1"),
+    "stop": ("#a1261b", "#fdecea"),
+    "none": (SUBTLE, "#e9edf2"),
+}
+
+
+def case_status(store, case_id):
+    """Read one case's pause/resume state and edit claim, and name it in the
+    words the list and the badge share. Never raises: a broken record shows as
+    「要確認」 so one bad case cannot break the whole list."""
+    result = {"control": None, "owner": None, "owner_error": None,
+              "label": "要確認", "tone": "stop"}
+    try:
+        editing = CaseEditing(store, case_id)
+    except (OSError, ValueError) as error:
+        result["owner_error"] = str(error)
+        return result
+    try:
+        control = editing.control_view()
+    except (OSError, ValueError):
+        control = None
+    # Read the claim separately so a broken owner record is reported, never shown as 「空き」.
+    try:
+        result["owner"] = editing.current()
+    except (OSError, ValueError) as error:
+        result["owner_error"] = str(error)
+    if control is None:
+        return result
+    result["control"] = control
+    phase, owner = control["phase"], result["owner"]
+    if phase == "pending":
+        label, tone = "停止要求中", "wait"
+    elif phase in {"acknowledged", "unassigned"}:
+        label, tone = "停止中", "stop"
+    elif control["needs_direction_confirmation"] and owner:
+        label, tone = "再開待ち", "wait"
+    elif owner:
+        label, tone = "作業中", "ok"
+    elif result["owner_error"]:
+        label, tone = "要確認", "stop"
+    else:
+        label, tone = "開始待ち", "none"
+    result.update(label=label, tone=tone)
+    return result
+
 
 class NewCaseDialog:
     """New case form. A chat-made JSON only fills the form as an editable draft;
@@ -148,20 +199,34 @@ class Hub:
         window.title("AI自律基盤 · 案件ワークスペース")
         window.geometry("1100x680")
         window.minsize(920, 620)
-        window.configure(bg="#f4f6fa")
+        window.configure(bg=BG)
         style = ttk.Style(window)
         style.theme_use("clam")
-        style.configure("TFrame", background="#f4f6fa")
-        style.configure("TLabel", background="#f4f6fa", foreground="#172b42", font=(FONT, 10))
-        style.configure("TRadiobutton", background="#f4f6fa", font=(FONT, 10))
+        style.configure("TFrame", background=BG)
+        style.configure("TLabel", background=BG, foreground=TEXT, font=(FONT, 10))
+        style.configure("TRadiobutton", background=BG, font=(FONT, 10))
         style.configure("TButton", font=(FONT, 10), padding=(10, 5))
+        # One primary button at a time: the one the "next step" asks for.
+        style.configure("Primary.TButton", font=(FONT, 10, "bold"), padding=(12, 5),
+                        background=PRIMARY, foreground="#ffffff", bordercolor=PRIMARY,
+                        lightcolor=PRIMARY, darkcolor=PRIMARY, focuscolor="#ffffff")
+        primary_states = [("disabled", "#dcdad5"), ("pressed", PRIMARY_HOVER), ("active", PRIMARY_HOVER)]
+        style.map("Primary.TButton", background=primary_states, foreground=[("disabled", "#a3a3a3")],
+                  bordercolor=[("disabled", BORDER), ("pressed", PRIMARY_HOVER), ("active", PRIMARY_HOVER)],
+                  lightcolor=primary_states, darkcolor=primary_states)
         style.configure("Title.TLabel", font=(FONT, 18, "bold"))
-        style.configure("Sub.TLabel", foreground="#526579")
-        style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1)
-        style.configure("Card.TLabel", background="#ffffff", foreground="#172b42", font=(FONT, 10))
+        style.configure("Sub.TLabel", foreground=SUBTLE)
+        style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1, bordercolor=BORDER)
+        style.configure("Plain.TFrame", background="#ffffff", borderwidth=0)
+        style.configure("Card.TLabel", background="#ffffff", foreground=TEXT, font=(FONT, 10))
         style.configure("Next.TLabel", background="#ffffff", foreground="#0b4f8a", font=(FONT, 11, "bold"))
-        style.configure("Treeview", font=(FONT, 11), rowheight=36)
-        style.configure("Treeview.Heading", font=(FONT, 10, "bold"))
+        for name in ("TEntry", "TCombobox"):
+            style.configure(name, bordercolor=BORDER)
+        style.configure("Treeview", font=(FONT, 11), rowheight=36, bordercolor=BORDER)
+        # Same selection colours whether or not the window is in front (clam greys it otherwise).
+        style.map("Treeview",
+                  background=[("disabled", "#dcdad5"), ("selected", SELECT_BG)],
+                  foreground=[("disabled", "#a3a3a3"), ("selected", SELECT_FG)])
         box = ttk.Frame(window, padding=(16, 10))
         box.pack(fill="both", expand=True)
         header = ttk.Frame(box)
@@ -174,22 +239,44 @@ class Hub:
         body.pack(fill="both", expand=True)
         left = ttk.Frame(body, width=270)
         left.pack(side="left", fill="y", padx=(0, 22))
-        ttk.Label(left, text="案件一覧").pack(anchor="w", pady=(0, 6))
+        list_head = ttk.Frame(left)
+        list_head.pack(fill="x", pady=(0, 6))
+        ttk.Label(list_head, text="案件一覧", font=(FONT, 11, "bold")).pack(side="left")
+        ttk.Button(list_head, text="＋ 案件を作る", command=self.new_case).pack(side="right")
         # Buttons are packed before the list so they stay visible on short screens.
+        # Less frequent ways in (import, inbox) and the manual refresh sit below the list.
         ttk.Button(left, text="一覧・進捗を更新", command=self.refresh).pack(side="bottom", fill="x")
-        ttk.Button(left, text="＋ 案件を作る", command=self.new_case).pack(side="bottom", fill="x", pady=(8, 6))
-        ttk.Button(left, text="受け取った依頼", command=self.open_inbox).pack(side="bottom", fill="x")
+        ttk.Button(left, text="受け取った依頼", command=self.open_inbox).pack(side="bottom", fill="x", pady=(0, 6))
         self.paste_claude_button = ttk.Button(left, text="Claudeの回答を取り込む", command=self.import_claude_reply)
-        self.paste_claude_button.pack(side="bottom", fill="x", pady=(0, 6))
-        self.tree = ttk.Treeview(left, columns=("title",), show="headings", selectmode="browse", height=4)
-        self.tree.heading("title", text="案件名")
-        self.tree.column("title", width=250)
+        self.paste_claude_button.pack(side="bottom", fill="x", pady=(8, 6))
+        # Each row shows its state in words, so the user need not open every case.
+        self.tree = ttk.Treeview(left, columns=("title", "state"), show="", selectmode="browse", height=4)
+        self.tree.column("title", width=180, stretch=True)
+        self.tree.column("state", width=86, stretch=False, anchor="e")
+        # Rows keep the tone as a tag but are not coloured: Treeview can only colour
+        # whole rows, which tinted the case names too. Colour lives in the badge.
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self.select)
         right = ttk.Frame(body)
         right.pack(side="left", fill="both", expand=True)
+        # Case name, its state badge and the pause/resume controls share one row,
+        # so the state sits next to what it describes.
+        title_row = ttk.Frame(right)
+        title_row.pack(fill="x")
+        self.work_label = tk.StringVar(value="")
+        self.resume_button = ttk.Button(title_row, text="方針を確認して再開", command=self.resume_work, state="disabled")
+        self.resume_button.pack(side="right", padx=(6, 0))
+        self.pause_button = ttk.Button(title_row, text="一時停止を要求", command=self.pause_work, state="disabled")
+        self.pause_button.pack(side="right")
         self.heading = tk.StringVar(value="最初の案件を作成してください")
-        ttk.Label(right, textvariable=self.heading, font=(FONT, 14, "bold"), wraplength=690).pack(anchor="w")
+        self.heading_label = ttk.Label(title_row, textvariable=self.heading, font=(FONT, 14, "bold"), wraplength=420)
+        self.heading_label.pack(side="left")
+        self.badge = tk.Label(title_row, textvariable=self.work_label, font=(FONT, 10, "bold"),
+                              padx=8, pady=1, bg=BG, fg=SUBTLE)
+        self.badge.pack(side="left", padx=(10, 0))
+        self.title_row = title_row
+        # A long case name wraps instead of pushing the badge (packed later) out of sight.
+        title_row.bind("<Configure>", lambda _event: self.fit_heading())
 
         # Summary card: who acts, what to do next, and the hand-over buttons.
         card = ttk.Frame(right, style="Card.TFrame", padding=(10, 6))
@@ -230,20 +317,14 @@ class Hub:
             button.pack(side="right", padx=(6, 0))
             self.actions.append(button)
         ttk.Entry(actions, textvariable=self.location, state="readonly").pack(side="left", fill="x", expand=True)
-        controls = ttk.Frame(right)
-        controls.pack(fill="x", pady=(0, 4))
-        self.work_label = tk.StringVar(value="案件を選択してください")
-        ttk.Label(controls, textvariable=self.work_label, font=(FONT, 10, "bold")).pack(side="left")
-        self.resume_button = ttk.Button(controls, text="方針を確認して再開", command=self.resume_work, state="disabled")
-        self.resume_button.pack(side="right", padx=(6, 0))
-        self.pause_button = ttk.Button(controls, text="一時停止を要求", command=self.pause_work, state="disabled")
-        self.pause_button.pack(side="right")
         self.tabs = ttk.Notebook(right)
         self.views = {}
         for key, label in (("task", "依頼"), ("status", "進捗・成果物"), ("feedback", "修正コメント")):
             frame = ttk.Frame(self.tabs)
             self.tabs.add(frame, text=label)
-            text = tk.Text(frame, height=3, wrap="word", font=(FONT, 11), padx=12, pady=8, relief="flat", bg="white", state="disabled")
+            # spacing2 widens wrapped lines towards the 1.5 line height in docs/DESIGN.md.
+            text = tk.Text(frame, height=3, wrap="word", font=(FONT, 11), padx=12, pady=8, relief="flat", bg="white",
+                           spacing2=5, spacing3=5, state="disabled")
             scroll = ttk.Scrollbar(frame, command=text.yview)
             text.configure(yscrollcommand=scroll.set)
             scroll.pack(side="right", fill="y")
@@ -313,42 +394,70 @@ class Hub:
         self.update_work_controls()
 
     # --- work state / summary ------------------------------------------
+    def fit_heading(self):
+        used = sum(w.winfo_reqwidth() for w in (self.badge, self.pause_button, self.resume_button)) + 24
+        width = max(160, self.title_row.winfo_width() - used)
+        if int(str(self.heading_label.cget("wraplength")) or 0) != width:
+            self.heading_label.configure(wraplength=width)
+
     def poll_work(self):
-        self.update_work_controls()
-        self.window.after(1500, self.poll_work)
+        try:
+            self.update_work_controls()
+            self.update_list_states()
+        finally:  # an unexpected error must not stop polling for good
+            self.window.after(1500, self.poll_work)
+
+    def show_list_state(self, case_id, status):
+        # tree.set never touches the selection, so polling cannot steal it.
+        if self.tree.exists(case_id):
+            self.tree.set(case_id, "state", status["label"])
+            self.tree.item(case_id, tags=(status["tone"],))
+
+    def update_list_states(self):
+        for case_id in self.tree.get_children():
+            if case_id != self.selected:  # the selected case is refreshed by update_work_controls
+                self.show_list_state(case_id, case_status(self.store, case_id))
 
     def update_work_controls(self):
         self.work_state = None
-        label = "案件を選択してください"
         phase = None
         owner, owner_error = None, None
         if self.selected:
-            editing = None
-            try:
-                editing = CaseEditing(self.store, self.selected)
-                self.work_state = editing.control_view()
-                phase = self.work_state["phase"]
-                label = {
-                    "active": "作業可能",
-                    "pending": "停止要求中 · 編集担当の報告待ち",
-                    "acknowledged": "停止報告あり · 編集担当の申告",
-                    "unassigned": "停止中 · 編集権の保持者なし",
-                }[phase]
-                if self.work_state["needs_direction_confirmation"]:
-                    label = "再開可 · 担当の方針確認待ち"
-                elif phase == "active" and self.work_state.get("confirmation"):
-                    label = "作業可能 · 担当が方針を確認済み"
-            except (OSError, ValueError):
-                label = "停止・再開の状態を確認できません"
-            try:
-                if editing is not None:
-                    owner = editing.current()
-            except (OSError, ValueError) as error:
-                owner_error = str(error)
-        self.work_label.set(label)
+            status = case_status(self.store, self.selected)
+            self.work_state, owner, owner_error = status["control"], status["owner"], status["owner_error"]
+            phase = (self.work_state or {}).get("phase")
+            fg, bg = TONES[status["tone"]]
+            self.work_label.set(status["label"])
+            self.badge.configure(fg=fg, bg=bg)
+            self.show_list_state(self.selected, status)
+        else:
+            self.work_label.set("")
+            self.badge.configure(fg=SUBTLE, bg=BG)
         self.pause_button.configure(state="normal" if phase == "active" else "disabled")
         self.resume_button.configure(state="normal" if phase in {"acknowledged", "unassigned"} else "disabled")
         self.update_summary(owner, owner_error)
+        self.mark_primary(owner, owner_error)
+        self.fit_heading()
+
+    def primary_button(self, owner, owner_error=None):
+        """The button for the step next_step() describes, or None when the
+        user only has to wait. Mirrors the branches of case_guide.next_step
+        (update_summary passes control=None when the claim is unreadable)."""
+        control = self.work_state
+        if not self.selected or not self.roles or control is None or owner_error:
+            return None
+        if control["phase"] in {"acknowledged", "unassigned"}:
+            return self.resume_button
+        if control["phase"] == "pending" or (control["needs_direction_confirmation"] and owner):
+            return None
+        return self.copy_review if owner else self.copy_impl
+
+    def mark_primary(self, owner, owner_error=None):
+        primary = self.primary_button(owner, owner_error)
+        for button in (self.copy_impl, self.copy_review, self.resume_button):
+            style = "Primary.TButton" if button is primary else "TButton"
+            if button.cget("style") != style:
+                button.configure(style=style)
 
     def update_summary(self, owner, owner_error=None):
         if not self.selected or not self.roles:
@@ -433,7 +542,9 @@ class Hub:
             for item in self.tree.get_children():
                 self.tree.delete(item)
             for case in cases:
-                self.tree.insert("", "end", iid=case["id"], values=(case["title"],))
+                status = case_status(self.store, case["id"])
+                self.tree.insert("", "end", iid=case["id"], values=(case["title"], status["label"]),
+                                 tags=(status["tone"],))
             if selected and self.tree.exists(selected):
                 self.tree.selection_set(selected)
                 self.select()

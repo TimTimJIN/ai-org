@@ -209,6 +209,67 @@ class HubUiTests(unittest.TestCase):
         self.assertIn("1 件", hub.next_label.get())
         self.assertTrue(hub.outputs_folder().samefile(self.store.folder(task["id"]) / "outputs"))
 
+    def primaries(self, hub):
+        return [b for b in (hub.copy_impl, hub.copy_review, hub.resume_button)
+                if b.cget("style") == "Primary.TButton"]
+
+    def test_only_the_next_step_button_is_primary(self):
+        task = self.store.create("A", "目的")
+        hub = Hub(self.root, self.store)
+        self.assertEqual(self.primaries(hub), [hub.copy_impl])  # nobody holds the case yet
+        self.assertEqual(hub.work_label.get(), "開始待ち")
+        token = CaseEditing(self.store, task["id"]).acquire("Codex")
+        hub.update_work_controls()
+        self.assertEqual(self.primaries(hub), [hub.copy_review])  # implementer at work -> review next
+        self.assertEqual(hub.work_label.get(), "作業中")
+        CaseEditing(self.store, task["id"]).release(token)
+        hub.pause_work()
+        self.assertEqual(self.primaries(hub), [hub.resume_button])  # stopped -> resume
+        self.assertEqual(hub.work_label.get(), "停止中")
+
+    def test_case_list_shows_each_state_without_moving_selection(self):
+        first = self.store.create("A", "目的")
+        second = self.store.create("B", "目的")
+        hub = Hub(self.root, self.store)
+        hub.tree.selection_set(first["id"])
+        hub.select()
+        token = CaseEditing(self.store, second["id"]).acquire("Codex")
+        hub.update_list_states()
+        self.assertEqual(hub.tree.set(second["id"], "state"), "作業中")
+        self.assertEqual(hub.tree.item(second["id"], "tags"), ("ok",))
+        self.assertEqual(hub.tree.set(first["id"], "state"), "開始待ち")
+        self.assertEqual(hub.tree.selection(), (first["id"],))
+        CaseEditing(self.store, second["id"]).release(token)
+
+    def test_broken_owner_record_is_not_shown_as_free(self):
+        task = self.store.create("A", "目的")
+        hub = Hub(self.root, self.store)
+        token = CaseEditing(self.store, task["id"]).acquire("Codex")
+        owner = self.store.folder(task["id"]) / ".editing" / "owner.json"
+        owner.write_text("{壊れた", encoding="utf-8")
+        hub.update_work_controls()
+        self.assertIn("要確認", hub.owner_label.get())
+        self.assertNotIn("空き", hub.owner_label.get())
+        self.assertEqual(self.primaries(hub), [])
+        self.assertEqual(hub.work_label.get(), "要確認")
+        del token
+
+    def test_badge_stays_visible_with_a_long_case_name(self):
+        self.store.create("とても長い案件名" * 12, "目的")
+        hub = Hub(self.root, self.store)
+        self.root.geometry("920x620")
+        self.root.update()
+        self.root.update()
+        self.assertTrue(self.visible(self.root, hub.badge))
+        self.assertTrue(self.visible(self.root, hub.resume_button))
+
+    def test_broken_case_record_shows_as_needs_check(self):
+        from hub_ui import case_status
+        task = self.store.create("A", "目的")
+        with patch("hub_ui.CaseEditing", side_effect=ValueError("壊れた記録")):
+            status = case_status(self.store, task["id"])
+        self.assertEqual((status["label"], status["tone"]), ("要確認", "stop"))
+
 
 if __name__ == "__main__":
     unittest.main()
