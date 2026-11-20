@@ -9,5 +9,6 @@
 - データ（cases、inbox、data、knowledge-vault、work-test）をリポジトリに入れない。テストは一時フォルダーを使う。
 - 使う版（タグ）の切り替え、データフォルダーにある旧コードの置き換え、ユーザー設定（Claude Code・Codex・git の共通設定）の変更、GitHub への push は、項目ごとにユーザーの確認を得る。
 - 中核（hub/）に開発固有の処理を入れない。開発向けの機能は拡張として分ける。
+- 画面（UI/UX）を作る・変える作業では、先に `docs/DESIGN.md` を読み、チェックリストで確かめ、終わりに同文書の「学習記録」へ学びを1件以上足す。
 - Claude と Gemini の実モデルレビューを受け、重大指摘は解消して再確認を受ける。Codex のレビューはその代わりにならない。
 - 確認コマンド：`cd hub && python -m unittest discover -p "test_*.py"`。
