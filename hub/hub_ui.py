@@ -10,7 +10,7 @@ from workspace_hub import CaseStore
 
 PLAN_BY_LABEL = {plan_label(plan): plan for plan in ROLE_PLANS}
 # 交互の意味をチェックボックスの横に短く常に出す（docs/DESIGN.md 原則4）。
-ALTERNATE_TEXT = "交互（作業を終えるたびに実装とレビューを入れ替え）"
+ALTERNATE_TEXT = "交互（実装とレビューを終えるたびに担当を入れ替え）"
 FONT = "Yu Gothic UI"
 
 # Colours follow docs/DESIGN.md (contrast checked: text 4.5:1, borders 3:1).

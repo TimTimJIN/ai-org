@@ -176,7 +176,10 @@ class HubUiTests(unittest.TestCase):
         self.assertEqual(hub.role_state.get(), "保存済み")
         # 実装担当（Claude Code）が終えると、開いたままの画面も入れ替わった予定を表示する
         editing = CaseEditing(self.store, task["id"])
-        note = editing.release(editing.acquire("Claude Code test"))
+        self.assertIsNone(editing.release(editing.acquire("Claude Code test")))  # 途中なら入れ替えない
+        hub.reload_rotated_roles()
+        self.assertEqual(hub.role_choice.get(), plan_label("claude-implements"))
+        note = editing.release(editing.acquire("Claude Code test"), complete_turn=True)
         self.assertIn("次の実装担当は Codex", note)
         hub.reload_rotated_roles()
         self.assertEqual(hub.role_choice.get(), plan_label("codex-implements"))

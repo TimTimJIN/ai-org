@@ -1,4 +1,4 @@
-"""交互の担当予定：実装担当が作業を終えるたびに、実装とレビューを入れ替える。
+"""交互の担当予定：実装担当が番を終えた（--turn-done）ときだけ、実装とレビューを入れ替える。
 
 Codex と Claude Code のどちらが終えても、同じ中核の処理（CaseEditing.release）を通る。
 """
@@ -64,14 +64,14 @@ class AlternateTests(unittest.TestCase):
         roles = self.store.roles(self.case_id)
         self.assertIsNone(roles["warning"])
         self.assertFalse(roles["alternate"])
-        self.finish("Claude Code a")
+        self.finish("Claude Code a", turn_done=True)
         self.assertEqual(self.plan(), "claude-implements")
 
     def test_finish_by_implementer_swaps_each_time_from_either_side(self):
-        notes = self.finish("Claude Code ai-org 1")
+        notes = self.finish("Claude Code ai-org 1", turn_done=True)
         self.assertEqual(self.plan(), "codex-implements")
         self.assertIn("次の実装担当は Codex", " ".join(notes))
-        notes = self.finish("Codex ai-org 2")
+        notes = self.finish("Codex ai-org 2", turn_done=True)
         self.assertEqual(self.plan(), "claude-implements")
         self.assertIn("次の実装担当は Claude Code", " ".join(notes))
         data = json.loads((self.store.folder(self.case_id) / "ROLES.json").read_text(encoding="utf-8"))
@@ -79,24 +79,26 @@ class AlternateTests(unittest.TestCase):
         self.assertIn("Codex ai-org 2", data["changed_by"])
         self.assertTrue(data["alternate"])
 
-    def test_reviewer_unknown_and_keep_turn_do_not_swap(self):
-        notes = self.finish("Codex review")
+    def test_mid_work_reviewer_and_unknown_do_not_swap(self):
+        # 既定（--turn-done なし）は作業の途中として扱い、番を保つ
+        notes = self.finish("Claude Code 途中")
+        self.assertEqual(self.plan(), "claude-implements")
+        self.assertIn("--turn-done", " ".join(notes))
+        notes = self.finish("Codex review", turn_done=True)
         self.assertEqual(self.plan(), "claude-implements")
         self.assertIn("入れ替えていません", " ".join(notes))
-        self.finish("ChatGPT")
+        self.finish("ChatGPT", turn_done=True)
         self.assertEqual(self.plan(), "claude-implements")
-        notes = self.finish("Claude Code 途中", keep_turn=True)
-        self.assertEqual(self.plan(), "claude-implements")
-        self.assertIn("--keep-turn", " ".join(notes))
 
     def test_start_reports_turn_and_warns_reviewer(self):
         session = Session(self.case_id, self.store)
         result = session.start("Codex x", self.root / "c.token")
         self.assertIn("実装 Claude Code → レビュー Codex（交互）", result["turn"])
         self.assertIn("レビュー担当です", result["turn"])
-        session.finish(self.root / "c.token", keep_turn=True)
+        session.finish(self.root / "c.token")
         result = session.start("Claude Code y", self.root / "d.token")
         self.assertNotIn("レビュー担当です", result["turn"])
+        self.assertIn("--turn-done", result["turn"])
 
     def test_failed_token_save_does_not_swap(self):
         session = Session(self.case_id, self.store)
@@ -108,7 +110,7 @@ class AlternateTests(unittest.TestCase):
 
     def test_corrupt_roles_never_blocks_release(self):
         (self.store.folder(self.case_id) / "ROLES.json").write_text("{", encoding="utf-8")
-        notes = self.finish("Claude Code a")
+        notes = self.finish("Claude Code a", turn_done=True)
         self.assertIn("入れ替えていません", " ".join(notes))
         self.assertIsNone(CaseEditing(self.store, self.case_id).current())
         self.assertEqual((self.store.folder(self.case_id) / "ROLES.json").read_text(encoding="utf-8"), "{")
@@ -119,23 +121,24 @@ class AlternateTests(unittest.TestCase):
         self.assertTrue(roles["alternate"])
         roles = self.store.set_roles(self.case_id, "codex-implements", roles["revision"], False)
         self.assertFalse(roles["alternate"])
-        self.finish("Codex a")
+        notes = self.finish("Codex a", turn_done=True)
         self.assertEqual(self.plan(), "codex-implements")
+        self.assertEqual(notes, [])  # 交互でなければ何も言わない
         with self.assertRaises(ValueError):
             self.store.set_roles(self.case_id, "codex-implements", self.store.roles(self.case_id)["revision"], "yes")
 
-    def test_legacy_release_command_swaps_and_keep_turn(self):
+    def test_legacy_release_command_swaps_only_with_turn_done(self):
         env = {**os.environ, "AI_ORG_DATA": str(self.root)}
         def run(*args):
             return subprocess.run([sys.executable, str(HUB / "workspace_hub.py"), *args, "--case", self.case_id],
                                   capture_output=True, text=True, encoding="utf-8", env=env, cwd=HUB)
         claim = run("claim", "--agent", "Claude Code legacy")
         self.assertEqual(claim.returncode, 0, claim.stderr)
-        released = run("release", "--token", claim.stdout.strip(), "--keep-turn")
+        released = run("release", "--token", claim.stdout.strip())
         self.assertEqual(released.returncode, 0, released.stderr)
         self.assertEqual(self.plan(), "claude-implements")
         claim = run("claim", "--agent", "Claude Code legacy")
-        released = run("release", "--token", claim.stdout.strip())
+        released = run("release", "--token", claim.stdout.strip(), "--turn-done")
         self.assertEqual(released.returncode, 0, released.stderr)
         self.assertIn("次の実装担当は Codex", released.stdout)
         self.assertEqual(self.plan(), "codex-implements")

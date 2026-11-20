@@ -3,7 +3,7 @@
   python ai_org.py start     --case <案件ID> --agent <担当とセッション名> [--token-file <パス>]
   python ai_org.py status    --case <案件ID> [--token-file <パス>]
   python ai_org.py pause-ack --case <案件ID> --token-file <パス>
-  python ai_org.py finish    --case <案件ID> --token-file <パス> [--status-unchanged] [--keep-turn]
+  python ai_org.py finish    --case <案件ID> --token-file <パス> [--status-unchanged] [--turn-done]
   python ai_org.py guard     --case <案件ID> --token-file <パス>   （書き込んでよければ終了コード 0、だめなら 1）
 
 --token-file を省くと、環境変数 AI_ORG_TOKEN_FILE を使う。start で省くと、一時フォルダーの ai-org\\ に一意の名前で作る。
@@ -32,8 +32,8 @@ def main(argv=None):
             p.add_argument("--agent", required=True)
         if name == "finish":
             p.add_argument("--status-unchanged", action="store_true")
-            p.add_argument("--keep-turn", action="store_true",
-                           help="作業の途中で会話を終えるとき。交互の担当予定を入れ替えない")
+            p.add_argument("--turn-done", action="store_true",
+                           help="実装とレビューを終えて番を終えるとき。交互の担当予定（実装・レビュー）を入れ替える")
         if name == "status":
             p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -94,7 +94,7 @@ def main(argv=None):
             print("[ai-org] 停止を報告しました。待機のために会話を終えるなら、finish で編集権を返してください。")
             return 0
         if args.command == "finish":
-            for note in session.finish(args.token_file, args.status_unchanged, keep_turn=args.keep_turn):
+            for note in session.finish(args.token_file, args.status_unchanged, turn_done=args.turn_done):
                 print(f"[ai-org] 注意：{note}")
             print("[ai-org] 編集権を返し、トークンファイルを消しました。")
             return 0

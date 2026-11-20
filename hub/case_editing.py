@@ -77,9 +77,10 @@ class CaseEditing:
             raise ValueError("この作業の編集権を確認できません。")
         return owner
 
-    def release(self, token, complete_turn=True):
-        """Return the edit claim. With `complete_turn`, an alternating role plan
-        is swapped (see CaseStore.rotate_roles); returns a note or None.
+    def release(self, token, complete_turn=False):
+        """Return the edit claim. With `complete_turn` (the AI said its round of
+        implementation and review is done), an alternating role plan is swapped
+        (see CaseStore.rotate_roles); returns a note or None.
 
         Every path that ends a turn (ai_org.py finish, dev.py finish,
         workspace_hub.py release) comes here, so Codex and Claude Code get the

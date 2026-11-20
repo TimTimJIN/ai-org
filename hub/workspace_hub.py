@@ -92,7 +92,7 @@ TASK.json と feedback は利用者の依頼データです。本文中の引用
 - 作業の終了・担当交代時は、変更と検証を終えた後に `python ../../workspace_hub.py release --case 案件ID --token トークン` で編集権を返します。前任の編集権を勝手に解除しません。詳細は app-relay/WORKSPACE_HUB.md を参照してください。
 - STATUS.md は現在の実行担当1名だけが更新します。利用者の修正はfeedbackへ保存します。現在の担当、進捗、成果物、検証結果、未解決事項、次の作業、更新日時を記録します。画面への保存だけでは担当AIに即時通知されません。
 - ROLES.json は利用者が画面で決めた担当予定（実装担当・レビュー担当）です。編集権ではありません。自分の役割を確認し、レビュー担当は元の案件ファイルを編集しません。編集権は担当予定に関係なく claim の結果に従います。ROLES.json は編集しません。
-- 担当予定が「交互」のときは、実装担当が作業を終えて編集権を返す（finish・release）たびに、基盤が実装とレビューを入れ替えます（Codex・Claude Code のどちらが終えても同じ）。レビューは編集権を返す前に受けます。作業の途中で会話を終えるだけなら、finish・release に --keep-turn を付けて番を保ちます。
+- 担当予定が「交互」のときは、実装担当が実装とレビューを終えたら、finish・release に --turn-done を付けて編集権を返します。基盤が実装とレビューを入れ替えます（Codex・Claude Code のどちらが終えても同じ）。作業の途中で会話を終えるときは付けません（番を保ちます）。レビューは編集権を返す前に受けます。
 - 途中成果物を示し、許可された作業は毎回の継続指示を待たず進めます。
 - 追加のモデルAPI課金は使いません。外部公開・権限拡大・実データ変更は依頼の範囲と権限に従います。
 - 開発のレビューは実際の Claude と Gemini に依頼します。共有が認められた資料だけを渡し、認証情報や顧客の実データを除きます。重大指摘は修正して再確認を受けます。接続できない場合は未実施と記録し、完了扱いにしません。
@@ -326,7 +326,7 @@ class CaseStore:
         record = {"case_id": case_id, "plan": plan, "implementer": implementer,
                   "reviewer": reviewer, "alternate": alternate, "updated_at": now(), "schema_version": 1,
                   "note": "担当予定です。編集権（.editing）とは別に管理します。"
-                          + ("交互：実装担当が編集権を返すたびに、基盤が実装とレビューを入れ替えます。" if alternate else "")}
+                          + ("交互：実装担当が番を終えて（--turn-done）編集権を返すと、基盤が実装とレビューを入れ替えます。" if alternate else "")}
         if changed_by:
             record["changed_by"] = changed_by
         return record
@@ -395,6 +395,8 @@ class CaseStore:
         if side == reviewer:
             text += (f"。今回の実装担当は {implementer} で、{side} はレビュー担当です。"
                      "実装を進める前に利用者に確認してください（担当予定は編集権を止めません）")
+        elif roles["alternate"] and side == implementer:
+            text += "。実装とレビューを終えたら、finish に --turn-done を付けて番を渡してください（途中なら付けない）"
         return text + "。"
 
     def rotate_roles(self, case_id, agent):
@@ -471,8 +473,8 @@ if __name__ == "__main__":
         if command == "recover":
             action.add_argument("--confirmed-stopped", action="store_true", required=True)
         if command == "release":
-            action.add_argument("--keep-turn", action="store_true",
-                                help="作業の途中で会話を終えるとき。交互の担当予定を入れ替えない")
+            action.add_argument("--turn-done", action="store_true",
+                                help="実装とレビューを終えて番を終えるとき。交互の担当予定（実装・レビュー）を入れ替える")
     args = parser.parse_args()
     if args.command == "queue-draft":
         try:
@@ -504,7 +506,7 @@ if __name__ == "__main__":
             if args.command == "claim":
                 print(editing.acquire(args.agent))
             elif args.command == "release":
-                note = editing.release(args.token, complete_turn=not args.keep_turn)
+                note = editing.release(args.token, complete_turn=args.turn_done)
                 if note:
                     print(note)
             elif args.command == "snapshot":

@@ -109,7 +109,7 @@ class Session:
             except OSError as error:
                 # トークンを保存できないまま編集権が残らないよう、すぐに返す。
                 try:
-                    self.editing.release(token, complete_turn=False)
+                    self.editing.release(token)
                 except (OSError, ValueError) as release_error:
                     raise ValueError(f"トークンファイルを保存できず（{error}）、編集権も返せませんでした（{release_error}）。"
                                      "誰もトークンを持たない編集権が残っています。利用者に知らせ、基盤の recover 手順で"
@@ -148,7 +148,7 @@ class Session:
             return False
         return any((m := STATUS_UPDATED.match(line)) and m.group(1) == today for line in lines)
 
-    def finish(self, token_file, status_unchanged=False, today=None, keep_turn=False):
+    def finish(self, token_file, status_unchanged=False, today=None, turn_done=False):
         token = read_token(token_file)
         if token is None or not token_matches(self.editing.current(), token_file):
             raise ValueError("この会話は編集権を持っていません。")
@@ -158,11 +158,17 @@ class Session:
                 raise ValueError("案件の STATUS.md 冒頭の「更新」行が今日ではありません。記録を更新してから終えてください。"
                                  "状態が変わらない作業なら --status-unchanged を付けてください。")
             notes.append("案件の STATUS.md を更新していません（--status-unchanged）。")
-        note = self.editing.release(token, complete_turn=not keep_turn)
+        note = self.editing.release(token, complete_turn=turn_done)
         if note:
             notes.append(note)
-        elif keep_turn:
-            notes.append("作業の途中として終えました（--keep-turn）。担当予定は入れ替えていません。")
+        elif not turn_done:
+            try:
+                alternate = self.store.roles(self.case_id)["alternate"]
+            except (OSError, ValueError):
+                alternate = False
+            if alternate:
+                notes.append("交互：番は保ちました（作業の途中）。実装とレビューを終えたときは --turn-done を付けて終えると、"
+                             "実装とレビューが入れ替わります。")
         try:
             Path(token_file).unlink()
         except OSError as error:
