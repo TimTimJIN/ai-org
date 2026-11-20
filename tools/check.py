@@ -1,4 +1,4 @@
-"""ai-org の自動テストをまとめて実行する（hub と extensions/dev）。1つでも失敗したら終了コード 1。"""
+"""ai-org の自動テストをまとめて実行する（hub と extensions/dev・extensions/relay）。1つでも失敗したら終了コード 1。"""
 from pathlib import Path
 import subprocess
 import sys
@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SUITES = [
     ("hub", ["-m", "unittest", "discover", "-p", "test_*.py"]),
     ("extensions/dev", ["-m", "unittest", "test_dev"]),
+    ("extensions/relay", ["-m", "unittest", "test_relay"]),
 ]
 
 failed = []
