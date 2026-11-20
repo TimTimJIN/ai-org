@@ -39,9 +39,8 @@ from case_guide import CLAUDE, CODEX, ROLE_PLANS  # noqa: E402
 
 # 終わりの印：行頭の「RELAY: <印> <relay-id>」。relay-id は、どの依頼への返答かを示す（古い返答と取り違えない）。
 MARKER = re.compile(r"^[ \t>*`]*RELAY:[ \t]*([A-Z_]+)(?:[ \t]+`?([0-9A-Za-z-]+))?", re.MULTILINE)
-READY, BLOCKED, APPROVED, CHANGES, FINISHED = (
-    "READY_FOR_REVIEW", "BLOCKED", "APPROVED", "CHANGES_REQUESTED", "FINISHED")
-KNOWN = {READY, BLOCKED, APPROVED, CHANGES, FINISHED}
+READY, BLOCKED, APPROVED, CHANGES = "READY_FOR_REVIEW", "BLOCKED", "APPROVED", "CHANGES_REQUESTED"
+KNOWN = {READY, BLOCKED, APPROVED, CHANGES}
 NEXT_TASK = ("案件の STATUS.md の「次の作業」から、いちばん優先度の高い1件を選んで進めてください。"
              "選んだ作業を返答の冒頭に書いてください。")
 PS = ["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(HERE / "uia_relay.ps1")]
@@ -353,32 +352,45 @@ class Relay:
                 "停止中なら新しい作業を始めず、最後の行に RELAY: BLOCKED と書いて止まってください。\n"
                 "返答の最後の行には、指定した印（RELAY: で始まる行）を1つだけ書いてください。\n")
 
+    def agent(self, side):
+        return f"{side} relay {self.run_id}"
+
     def finish_command(self, side):
+        # --turn-done は付けない：担当の入れ替えは、レビューで承認されたときに中継が行う（1ラウンド2往復で済む）。
         token = self.token_file(side)
         if (self.project / ".ai-org.json").is_file():
             return (f"python \"{self.home / 'extensions' / 'dev' / 'dev.py'}\" finish --project \"{self.project}\" "
-                    f"--token-file \"{token}\" --turn-done")
-        return f"python \"{self.data / 'ai_org.py'}\" finish --case {self.case_id} --token-file \"{token}\" --turn-done"
+                    f"--token-file \"{token}\"")
+        return f"python \"{self.data / 'ai_org.py'}\" finish --case {self.case_id} --token-file \"{token}\""
 
-    def implement_prompt(self, side, other, round_no, task):
+    def work_steps(self, side, other):
+        """実装・修正の共通の手順。編集権を取り、作業し、記録してから返す（レビューの間は誰も書き込まない）。"""
         token = self.token_file(side)
-        return (self.header(side, "implementer", other, round_no) +
-                f"\n## 依頼\n{task}\n\n## 手順\n"
+        return ("## 手順\n"
                 f"1. 書き込みの前に `python \"{self.data / 'ai_org.py'}\" start --case {self.case_id} "
-                f"--agent \"{side} relay {self.run_id}\" --token-file \"{token}\"` を実行する（この中継の中で一度だけ）。"
+                f"--agent \"{self.agent(side)}\" --token-file \"{token}\"` を実行する。"
                 "止められたら書き込まず、BLOCKED で理由を書く。\n"
-                "2. 案件の AGENTS.md・STATUS.md と作業フォルダーの AGENTS.md（あれば）に従って実装し、検証する。\n"
+                "2. 案件の AGENTS.md・STATUS.md と作業フォルダーの AGENTS.md（あれば）に従って作業し、検証する。\n"
                 f"3. コミットは、git と同じコマンドの中で環境変数 AI_ORG_TOKEN_FILE を \"{token}\" に設定して行う。push はしない。\n"
-                "4. 編集権はまだ返さない（レビューの後で返す）。\n"
-                "5. 返答に、変更の要約・コミットID・検証の結果を書く。最後の行は、レビューに回せるなら "
+                "4. 案件の STATUS.md（とリポジトリの記録があればそれも）の冒頭の「更新」行を今日にし、今回の変更・検証の結果と"
+                f"「{other} のレビュー待ち（中継 {self.run_id}）」を書く。\n"
+                f"5. `{self.finish_command(side)}` で編集権を返す。承認されたら、中継が実装とレビューの担当を入れ替える。"
+                "直す点があれば、もう一度依頼が届く。\n"
+                "6. 返答に、変更の要約・コミットID・検証の結果を書く。最後の行は、レビューに回せるなら "
                 f"`RELAY: {READY}`、進められないなら `RELAY: {BLOCKED}`。\n")
+
+    def implement_prompt(self, side, other, round_no, task, previous=None):
+        note = ""
+        if previous:
+            note = (f"\n## 前のラウンド\n{previous}（中継 {self.run_id}）。STATUS.md の「レビュー待ち」の記載は、"
+                    "承認済みに直してから進める。\n")
+        return (self.header(side, "implementer", other, round_no) + note +
+                f"\n## 依頼\n{task}\n\n" + self.work_steps(side, other))
 
     def fix_prompt(self, side, other, round_no, review):
         return (self.header(side, "implementer", other, round_no) +
                 f"\n## {other} のレビュー（指摘）\n<<<\n{review}\n>>>\n\n"
-                "重大な指摘を直し、検証し、コミットしてください（push はしない。編集権はまだ返さない）。"
-                "直さない指摘は理由を書く。最後の行は "
-                f"`RELAY: {READY}` か `RELAY: {BLOCKED}`。\n")
+                "重大な指摘を直す。直さない指摘は理由を書く。\n\n" + self.work_steps(side, other))
 
     def review_prompt(self, side, other, round_no, report, base):
         return (self.header(side, "reviewer", other, round_no) +
@@ -388,36 +400,36 @@ class Relay:
                 "重大な問題は場所と理由を具体的に書く。\n最後の行は、重大な問題がなければ "
                 f"`RELAY: {APPROVED}`、直してほしい点があれば `RELAY: {CHANGES}`。\n")
 
-    def finish_prompt(self, side, other, round_no):
-        return (self.header(side, "implementer", other, round_no) +
-                f"\n## レビューで承認されました（{other}）\n"
-                "1. 案件の STATUS.md（とリポジトリの記録があればそれも）の冒頭の「更新」行を今日にし、"
-                f"今回の変更と「{other} のレビューで承認（中継 {self.run_id}）」を書く。必要ならコミットする（push はしない）。\n"
-                f"2. `{self.finish_command(side)}` で編集権を返す（--turn-done で、次は実装とレビューが入れ替わる）。\n"
-                f"最後の行は、返せたら `RELAY: {FINISHED}`、失敗したら `RELAY: {BLOCKED}` と理由。\n")
+    def complete_turn(self, implementer):
+        """承認されたラウンドを終える：実装担当が編集権を返していれば、中核の入れ替え（finish --turn-done と同じ処理）を行う。"""
+        with self.editing.guard():
+            owner = self.editing.current()
+            if owner is not None:
+                raise RelayStopped(f"承認されましたが、編集権を {owner['agent']} が持ったままです。担当予定は入れ替えていません。")
+            note = self.store.rotate_roles(self.case_id, self.agent(implementer))
+        self.log("turn", text=note or "交互ではないため、担当予定はそのまま。")
+        return note
 
     # ラウンド ----------------------------------------------------------------
     def git_head(self):
         result = subprocess.run(["git", "-C", str(self.project), "rev-parse", "HEAD"], capture_output=True, text=True)
         return result.stdout.strip() or "HEAD"
 
-    def run_round(self, round_no, task):
+    def run_round(self, round_no, task, previous=None):
         roles = self.store.roles(self.case_id)
         if roles["warning"]:
             raise RelayStopped(roles["warning"])
         implementer, reviewer = ROLE_PLANS[roles["plan"]]
         base = self.head()
         self.log("round", round=round_no, implementer=implementer, reviewer=reviewer, base=base)
-        prompt = self.implement_prompt(implementer, reviewer, round_no, task)
+        prompt = self.implement_prompt(implementer, reviewer, round_no, task, previous)
         for _ in range(self.max_reviews):
             report, marker = self.ask(implementer, "implementer", prompt)
             if marker != READY:
                 raise RelayStopped(f"{implementer} の返答の印が想定外です（{marker}）。")
             review, verdict = self.ask(reviewer, "reviewer", self.review_prompt(reviewer, implementer, round_no, report, base))
             if verdict == APPROVED:
-                _, done = self.ask(implementer, "implementer", self.finish_prompt(implementer, reviewer, round_no))
-                if done != FINISHED:
-                    raise RelayStopped(f"{implementer} が編集権を返したと報告しませんでした（{done}）。")
+                self.complete_turn(implementer)
                 return implementer, reviewer
             if verdict != CHANGES:
                 raise RelayStopped(f"{reviewer} の返答の印が想定外です（{verdict}）。")
@@ -437,9 +449,11 @@ class Relay:
         try:
             self.log("start", text=f"依頼：{task}\n回数：{rounds}\nつなぎ方：" +
                      "、".join(adapter.describe() for adapter in self.adapters.values()))
+            previous = None
             for round_no in range(1, rounds + 1):
-                implementer, reviewer = self.run_round(round_no, task if round_no == 1 else NEXT_TASK)
-                self.log("done", text=f"ラウンド {round_no}：{implementer} が実装、{reviewer} が承認。")
+                implementer, reviewer = self.run_round(round_no, task if round_no == 1 else NEXT_TASK, previous)
+                previous = f"ラウンド {round_no}：{implementer} が実装し、{reviewer} がレビューで承認した"
+                self.log("done", text=previous + "。")
             return self.run_dir
         except RelayStopped as error:
             self.log("stop", reason=str(error))

@@ -109,7 +109,14 @@ Claude と Codex に、実装とレビューを自動で交互に依頼する。
 - 1ラウンドのレビューの往復の上限（`--max-reviews`、既定4）・全体の時間の上限（`--max-minutes`、既定180分）・1通の返答を待つ上限（`--turn-minutes`、既定60分）
 - AI の「進められない」（`RELAY: BLOCKED`）、終わりの印のない返答、想定外の印
 
-1ラウンドの流れ（担当は案件の担当予定 ROLES.json に従う）：実装担当が `ai_org.py start` で編集権を取り、実装・検証・コミット（push はしない）→ `RELAY: READY_FOR_REVIEW` → レビュー担当が読み取りだけで `git diff <開始時のコミット>..HEAD` を確かめ `RELAY: APPROVED` か `RELAY: CHANGES_REQUESTED` → 指摘があれば実装担当が直す（往復）→ 承認されたら実装担当が STATUS を更新し `finish --turn-done` で編集権を返す → `RELAY: FINISHED`。`--turn-done` により、次のラウンドは実装とレビューが入れ替わる（`--rounds N`、2ラウンド目以降の依頼は案件の STATUS.md の「次の作業」）。
+1ラウンドの流れ（担当は案件の担当予定 ROLES.json に従う。承認まで指摘がなければ、送るのは実装担当とレビュー担当に1通ずつの2通）：
+
+1. 実装担当：`ai_org.py start` で編集権を取り、実装・検証・コミット（push はしない）、STATUS を「レビュー待ち」に更新、`finish`（`--turn-done` なし）で編集権を返す → `RELAY: READY_FOR_REVIEW`
+2. レビュー担当：読み取りだけで `git diff <開始時のコミット>..HEAD` を確かめる → `RELAY: APPROVED` か `RELAY: CHANGES_REQUESTED`
+3. 指摘があれば、実装担当が start し直して直し、同じく finish して 1 の印を返す（往復）
+4. 承認されたら、中継が中核の入れ替え（`finish --turn-done` と同じ処理）を行う。実装担当が編集権を持ったままなら入れ替えずに止まる。次のラウンドは実装とレビューが入れ替わる（`--rounds N`、2ラウンド目以降の依頼は案件の STATUS.md の「次の作業」。前のラウンドの承認を STATUS に反映するよう依頼文で伝える）。
+
+レビューの間は誰も編集権を持たないので、レビュー担当が見る内容は変わらない。最後のラウンドの STATUS は「レビュー待ち」のまま残る（承認は中継の記録にある）。
 
 送った文と返答は、すべて案件フォルダーの `relay\<実行ID>\`（`transcript.md`、`events.jsonl`）に残る。同じ案件で中継は同時に1つだけ（`relay\RUNNING`）。
 

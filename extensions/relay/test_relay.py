@@ -10,7 +10,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent.parent / "hub"))
 
 import relay  # noqa: E402
-from relay import (APPROVED, BLOCKED, CHANGES, FINISHED, READY, AppAdapter, CliAdapter, Relay,  # noqa: E402
+from relay import (APPROVED, BLOCKED, CHANGES, READY, AppAdapter, CliAdapter, Relay,  # noqa: E402
                    RelayStopped, last_marker)
 from case_editing import CaseEditing  # noqa: E402
 from case_guide import CLAUDE, CODEX  # noqa: E402
@@ -67,11 +67,11 @@ class RelayTests(unittest.TestCase):
         self.assertIsNone(last_marker("（最後の行は `RELAY: <印> r-3` の形に）", "r-3"))  # 依頼文の説明は印ではない
 
     def test_round_with_one_fix_then_approval(self):
-        claude = FakeAI(CLAUDE, [f"実装した\nRELAY: {READY}", f"直した\nRELAY: {READY}", f"返した\nRELAY: {FINISHED}"])
+        claude = FakeAI(CLAUDE, [f"実装した\nRELAY: {READY}", f"直した\nRELAY: {READY}"])
         codex = FakeAI(CODEX, [f"ここが違う\nRELAY: {CHANGES}", f"よい\nRELAY: {APPROVED}"])
         run_dir = self.relay(claude, codex).run("機能を足す")
-        roles = [role for role, _ in claude.received]
-        self.assertEqual(roles, ["implementer", "implementer", "implementer"])
+        # 承認の後に「返して」の往復はない：実装→レビュー（→修正→レビュー）だけ。
+        self.assertEqual([role for role, _ in claude.received], ["implementer", "implementer"])
         self.assertEqual([role for role, _ in codex.received], ["reviewer", "reviewer"])
         first = claude.received[0][1]
         nonce = first.splitlines()[0].removeprefix("relay-id: ")
@@ -82,7 +82,10 @@ class RelayTests(unittest.TestCase):
         self.assertIn("ここが違う", claude.received[1][1])          # 指摘が実装担当に届く
         self.assertIn("実装した", codex.received[0][1])              # 報告がレビュー担当に届く
         self.assertIn("git diff base123..HEAD", codex.received[0][1])
-        self.assertIn("--turn-done", claude.received[2][1])
+        for _, prompt in claude.received:
+            self.assertIn("finish --case", prompt)     # 実装担当は作業ごとに編集権を返す
+            self.assertNotIn("--turn-done", prompt)    # 入れ替えは承認のときに中継が行う
+        self.assertEqual(self.store.roles(self.case_id)["plan"], "codex-implements")
         transcript = (run_dir / "transcript.md").read_text(encoding="utf-8")
         self.assertIn("ここが違う", transcript)
         kinds = [json.loads(line)["kind"] for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -90,27 +93,26 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(kinds[-1], "done")
         self.assertFalse((run_dir.parent / "RUNNING").exists())
 
-    def test_roles_follow_rotation_between_rounds(self):
-        def rotate(_ai):
-            roles = self.store.roles(self.case_id)
-            editing = CaseEditing(self.store, self.case_id)
-            editing.release(editing.acquire(_ai.side + " relay"), complete_turn=True)  # finish --turn-done の代わり
-            self.assertNotEqual(roles["plan"], self.store.roles(self.case_id)["plan"])
-
-        claude = FakeAI(CLAUDE, [f"実装\nRELAY: {READY}", f"返した\nRELAY: {FINISHED}", f"よい\nRELAY: {APPROVED}"])
-        codex = FakeAI(CODEX, [f"よい\nRELAY: {APPROVED}", f"実装\nRELAY: {READY}", f"返した\nRELAY: {FINISHED}"])
-        original = claude.send
-
-        def claude_send(prompt, role, should_stop=None):
-            reply = original(prompt, role, should_stop)
-            if FINISHED in reply:
-                rotate(claude)
-            return reply
-        claude.send = claude_send
-        self.relay(claude, codex).run("一つ目", rounds=2)
-        self.assertEqual([role for role, _ in codex.received], ["reviewer", "implementer", "implementer"])
+    def test_roles_alternate_between_rounds_with_two_relays_each(self):
+        claude = FakeAI(CLAUDE, [f"実装\nRELAY: {READY}", f"よい\nRELAY: {APPROVED}"])
+        codex = FakeAI(CODEX, [f"よい\nRELAY: {APPROVED}", f"実装\nRELAY: {READY}"])
+        run_dir = self.relay(claude, codex).run("一つ目", rounds=2)
+        self.assertEqual([role for role, _ in claude.received], ["implementer", "reviewer"])
+        self.assertEqual([role for role, _ in codex.received], ["reviewer", "implementer"])
         self.assertIn("次の作業", codex.received[1][1])
-        self.assertEqual(self.store.roles(self.case_id)["plan"], "codex-implements")
+        self.assertIn("前のラウンド", codex.received[1][1])  # 前の承認を STATUS に反映させる
+        self.assertEqual(self.store.roles(self.case_id)["plan"], "claude-implements")  # 2回入れ替わって元に戻る
+        sends = [json.loads(l) for l in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sum(1 for e in sends if e["kind"] == "send"), 4)  # 2ラウンド × 2往復
+
+    def test_approval_without_returned_edit_right_does_not_swap(self):
+        def keep_claim(ai):
+            CaseEditing(self.store, self.case_id).acquire(ai.side + " relay run1")
+        claude = FakeAI(CLAUDE, [f"実装\nRELAY: {READY}"], on_send=keep_claim)
+        codex = FakeAI(CODEX, [f"よい\nRELAY: {APPROVED}"])
+        with self.assertRaisesRegex(RelayStopped, "持ったまま"):
+            self.relay(claude, codex).run("x")
+        self.assertEqual(self.store.roles(self.case_id)["plan"], "claude-implements")
 
     def test_blocked_missing_marker_and_review_limit_stop(self):
         claude = FakeAI(CLAUDE, [f"できない\nRELAY: {BLOCKED}"])
