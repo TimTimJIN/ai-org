@@ -24,11 +24,32 @@ ROLE_PLANS = {
     "claude-implements": (CLAUDE, CODEX),
 }
 DEFAULT_PLAN = "codex-implements"
+# 交互：実装担当が作業を終える（編集権を返す）たびに、実装とレビューを入れ替える。
+DEFAULT_ALTERNATE = True
 
 
-def plan_label(plan):
+def plan_label(plan, alternate=False):
     implementer, reviewer = ROLE_PLANS[plan]
-    return f"実装 {implementer} → レビュー {reviewer}"
+    return f"実装 {implementer} → レビュー {reviewer}" + ("（交互）" if alternate else "")
+
+
+def swapped_plan(plan):
+    """The plan with implementer and reviewer exchanged."""
+    implementer, reviewer = ROLE_PLANS[require_plan(plan)]
+    return next(key for key, pair in ROLE_PLANS.items() if pair == (reviewer, implementer))
+
+
+def agent_side(agent):
+    """Which AI an agent name ("Claude Code ai-org 1234abcd", "Codex 会話名") belongs to, or None.
+
+    Only the start of the name counts: the rest often holds a repository name
+    that may itself contain "codex" or "claude".
+    """
+    name = (agent or "").strip().casefold()
+    for side, word in ((CODEX, "codex"), (CLAUDE, "claude")):
+        if name.startswith(word):
+            return side
+    return None
 
 
 def require_plan(plan):

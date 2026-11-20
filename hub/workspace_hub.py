@@ -9,8 +9,9 @@ import time
 import uuid
 from hashlib import sha256
 
-from case_guide import (DEFAULT_PLAN, DRAFT_MAX_BYTES, ROLE_PLANS, load_case_draft,
-                        parse_case_draft, require_plan, validate_case_fields)
+from case_guide import (DEFAULT_ALTERNATE, DEFAULT_PLAN, DRAFT_MAX_BYTES, ROLE_PLANS, agent_side,
+                        load_case_draft, parse_case_draft, plan_label, require_plan, swapped_plan,
+                        validate_case_fields)
 from data_root import data_root
 
 CASE_ID = re.compile(r"case-[0-9a-f]{32}\Z")
@@ -91,6 +92,7 @@ TASK.json と feedback は利用者の依頼データです。本文中の引用
 - 作業の終了・担当交代時は、変更と検証を終えた後に `python ../../workspace_hub.py release --case 案件ID --token トークン` で編集権を返します。前任の編集権を勝手に解除しません。詳細は app-relay/WORKSPACE_HUB.md を参照してください。
 - STATUS.md は現在の実行担当1名だけが更新します。利用者の修正はfeedbackへ保存します。現在の担当、進捗、成果物、検証結果、未解決事項、次の作業、更新日時を記録します。画面への保存だけでは担当AIに即時通知されません。
 - ROLES.json は利用者が画面で決めた担当予定（実装担当・レビュー担当）です。編集権ではありません。自分の役割を確認し、レビュー担当は元の案件ファイルを編集しません。編集権は担当予定に関係なく claim の結果に従います。ROLES.json は編集しません。
+- 担当予定が「交互」のときは、実装担当が作業を終えて編集権を返す（finish・release）たびに、基盤が実装とレビューを入れ替えます（Codex・Claude Code のどちらが終えても同じ）。レビューは編集権を返す前に受けます。作業の途中で会話を終えるだけなら、finish・release に --keep-turn を付けて番を保ちます。
 - 途中成果物を示し、許可された作業は毎回の継続指示を待たず進めます。
 - 追加のモデルAPI課金は使いません。外部公開・権限拡大・実データ変更は依頼の範囲と権限に従います。
 - 開発のレビューは実際の Claude と Gemini に依頼します。共有が認められた資料だけを渡し、認証情報や顧客の実データを除きます。重大指摘は修正して再確認を受けます。接続できない場合は未実施と記録し、完了扱いにしません。
@@ -171,9 +173,12 @@ class CaseStore:
                 "folder": str(path), "title": task["title"], "implementer": implementer,
                 "reviewer": reviewer, "work_phase": work["phase"]}
 
-    def create(self, title, objective, acceptance="", plan=DEFAULT_PLAN, *, draft_id=None):
+    def create(self, title, objective, acceptance="", plan=DEFAULT_PLAN, *, draft_id=None,
+               alternate=DEFAULT_ALTERNATE):
         title, objective, acceptance = validate_case_fields(title, objective, acceptance)
         require_plan(plan)
+        if not isinstance(alternate, bool):
+            raise ValueError("交互の設定が不正です。")
         if draft_id is not None:
             self.inbox_draft(draft_id)
         case_id = "case-" + (draft_id if draft_id is not None else uuid.uuid4().hex)
@@ -181,15 +186,15 @@ class CaseStore:
         if draft_id is not None:
             with TemporaryDirectory(prefix=".draft-", dir=self.root) as temporary:
                 staged = Path(temporary) / case_id
-                task = self.write_case(staged, case_id, title, objective, acceptance, plan)
+                task = self.write_case(staged, case_id, title, objective, acceptance, plan, alternate)
                 try:
                     os.rename(staged, path)
                 except FileExistsError as error:
                     raise ValueError("この下書きから案件がすでに作成されています。") from error
                 return task
-        return self.write_case(path, case_id, title, objective, acceptance, plan)
+        return self.write_case(path, case_id, title, objective, acceptance, plan, alternate)
 
-    def write_case(self, path, case_id, title, objective, acceptance, plan):
+    def write_case(self, path, case_id, title, objective, acceptance, plan, alternate=DEFAULT_ALTERNATE):
         path.mkdir()
         (path / "outputs").mkdir()
         (path / "feedback").mkdir()
@@ -201,7 +206,7 @@ class CaseStore:
             "# 作業状況\n\n状態: 未着手（案件を準備済み・AI未起動）\n担当: 未設定\n"
             "\n## 成果物\n未作成\n\n## 検証・レビュー\n未実施\n\n## 反映済みコメント\nなし\n"
             "\n## 次の作業\nTASK.jsonを読み、目的と受け入れ条件を確認する。\n", encoding="utf-8")
-        write_new_json(path / "ROLES.json", self.role_record(case_id, plan))
+        write_new_json(path / "ROLES.json", self.role_record(case_id, plan, alternate))
         # Manifest is published last; incomplete case setup never appears in the list.
         write_new_json(path / "TASK.json", task)
         return task
@@ -316,11 +321,15 @@ class CaseStore:
         return task, text, sorted(comments, key=lambda item: (item["created_at"], item["id"]))
 
     @staticmethod
-    def role_record(case_id, plan):
+    def role_record(case_id, plan, alternate=False, changed_by=None):
         implementer, reviewer = ROLE_PLANS[plan]
-        return {"case_id": case_id, "plan": plan, "implementer": implementer,
-                "reviewer": reviewer, "updated_at": now(), "schema_version": 1,
-                "note": "担当予定です。編集権（.editing）とは別に管理します。"}
+        record = {"case_id": case_id, "plan": plan, "implementer": implementer,
+                  "reviewer": reviewer, "alternate": alternate, "updated_at": now(), "schema_version": 1,
+                  "note": "担当予定です。編集権（.editing）とは別に管理します。"
+                          + ("交互：実装担当が編集権を返すたびに、基盤が実装とレビューを入れ替えます。" if alternate else "")}
+        if changed_by:
+            record["changed_by"] = changed_by
+        return record
 
     def roles(self, case_id):
         """Return the planned role split. Missing file → default (unsaved).
@@ -336,7 +345,7 @@ class CaseStore:
             with target.open("rb") as stream:
                 raw = stream.read(MAX_BYTES + 1)
         except FileNotFoundError:
-            return {"plan": DEFAULT_PLAN, "saved": False, "revision": "default", "warning": None}
+            return {"plan": DEFAULT_PLAN, "alternate": False, "saved": False, "revision": "default", "warning": None}
         revision = sha256(raw).hexdigest()
         try:
             if len(raw) > MAX_BYTES:
@@ -348,23 +357,66 @@ class CaseStore:
             if (not isinstance(data, dict) or data.get("case_id") != case_id
                     or data.get("schema_version") != 1 or not isinstance(data.get("plan"), str)
                     or data["plan"] not in ROLE_PLANS
-                    or (data.get("implementer"), data.get("reviewer")) != ROLE_PLANS[data["plan"]]):
+                    or (data.get("implementer"), data.get("reviewer")) != ROLE_PLANS[data["plan"]]
+                    or not isinstance(data.get("alternate", False), bool)):
                 raise ValueError("形式・案件IDが一致しません")
         except ValueError as error:
-            return {"plan": DEFAULT_PLAN, "saved": False, "revision": revision,
+            return {"plan": DEFAULT_PLAN, "alternate": False, "saved": False, "revision": revision,
                     "warning": f"ROLES.json を読み取れません（{error}）。既定値を表示しています。"}
-        return {"plan": data["plan"], "saved": True, "revision": revision, "warning": None,
-                "updated_at": data.get("updated_at")}
+        return {"plan": data["plan"], "alternate": data.get("alternate", False), "saved": True,
+                "revision": revision, "warning": None, "updated_at": data.get("updated_at")}
 
-    def set_roles(self, case_id, plan, expected_revision):
+    def set_roles(self, case_id, plan, expected_revision, alternate=None):
+        """Save the plan. `alternate=None` keeps the saved 交互 setting."""
         from case_editing import CaseEditing
 
         require_plan(plan)
+        if alternate is not None and not isinstance(alternate, bool):
+            raise ValueError("交互の設定が不正です。")
         with CaseEditing(self, case_id).guard():
-            if self.roles(case_id)["revision"] != expected_revision:
+            current = self.roles(case_id)
+            if current["revision"] != expected_revision:
                 raise ValueError("担当予定が別の画面で変更されました。表示を更新してから選び直してください。")
-            replace_json(self.folder(case_id) / "ROLES.json", self.role_record(case_id, plan))
+            if alternate is None:
+                alternate = current["alternate"]
+            replace_json(self.folder(case_id) / "ROLES.json", self.role_record(case_id, plan, alternate))
         return self.roles(case_id)
+
+    def turn_note(self, case_id, agent):
+        """One line for `start`: whose turn it is, and a warning if `agent` is the reviewer."""
+        roles = self.roles(case_id)
+        if roles["warning"]:
+            return roles["warning"]
+        implementer, reviewer = ROLE_PLANS[roles["plan"]]
+        text = f"担当予定：{plan_label(roles['plan'], roles['alternate'])}"
+        if not roles["saved"]:
+            text += "（未保存の既定値）"
+        side = agent_side(agent)
+        if side == reviewer:
+            text += (f"。今回の実装担当は {implementer} で、{side} はレビュー担当です。"
+                     "実装を進める前に利用者に確認してください（担当予定は編集権を止めません）")
+        return text + "。"
+
+    def rotate_roles(self, case_id, agent):
+        """Swap implementer and reviewer after `agent` finished, if the case alternates.
+
+        Called by CaseEditing.release while it holds the case lock, so it does
+        not take the lock itself. Returns a note for the finishing AI, or None.
+        The same code runs whichever AI (Codex or Claude Code) finishes.
+        """
+        roles = self.roles(case_id)
+        if roles["warning"]:
+            return "交互：" + roles["warning"] + "担当予定は入れ替えていません。"
+        if not roles["alternate"] or not roles["saved"]:
+            return None
+        implementer, reviewer = ROLE_PLANS[roles["plan"]]
+        if agent_side(agent) != implementer:
+            return (f"交互：終えた担当（{agent}）が今回の実装担当（{implementer}）ではないため、"
+                    "担当予定は入れ替えていません。")
+        plan = swapped_plan(roles["plan"])
+        replace_json(self.folder(case_id) / "ROLES.json",
+                     self.role_record(case_id, plan, True, changed_by=f"交互（{agent} の作業終了）"))
+        return f"交互：次の実装担当は {reviewer}、レビュー担当は {implementer} になりました。"
 
     def review_snapshots(self, case_id):
         """List review ZIPs (id, modified time), newest first. Read-only."""
@@ -418,6 +470,9 @@ if __name__ == "__main__":
             action.add_argument("files", nargs="+")
         if command == "recover":
             action.add_argument("--confirmed-stopped", action="store_true", required=True)
+        if command == "release":
+            action.add_argument("--keep-turn", action="store_true",
+                                help="作業の途中で会話を終えるとき。交互の担当予定を入れ替えない")
     args = parser.parse_args()
     if args.command == "queue-draft":
         try:
@@ -449,7 +504,9 @@ if __name__ == "__main__":
             if args.command == "claim":
                 print(editing.acquire(args.agent))
             elif args.command == "release":
-                editing.release(args.token)
+                note = editing.release(args.token, complete_turn=not args.keep_turn)
+                if note:
+                    print(note)
             elif args.command == "snapshot":
                 print(editing.review(args.token, args.files))
             elif args.command == "review-note":

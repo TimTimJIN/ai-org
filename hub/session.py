@@ -109,7 +109,7 @@ class Session:
             except OSError as error:
                 # トークンを保存できないまま編集権が残らないよう、すぐに返す。
                 try:
-                    self.editing.release(token)
+                    self.editing.release(token, complete_turn=False)
                 except (OSError, ValueError) as release_error:
                     raise ValueError(f"トークンファイルを保存できず（{error}）、編集権も返せませんでした（{release_error}）。"
                                      "誰もトークンを持たない編集権が残っています。利用者に知らせ、基盤の recover 手順で"
@@ -120,8 +120,12 @@ class Session:
         if "resumed_at" in control:
             self.editing.confirm_direction(read_token(token_file), control["request_id"])
             confirmed = True
+        try:
+            turn = self.store.turn_note(self.case_id, agent)
+        except (OSError, ValueError) as error:
+            turn = f"担当予定を読み取れません：{error}"
         return {"claimed": claimed, "confirmed": confirmed, "token_file": str(token_file),
-                "direction": control.get("direction", "")}
+                "direction": control.get("direction", ""), "turn": turn}
 
     # 停止報告 -----------------------------------------------------------
     def pause_ack(self, token_file):
@@ -144,7 +148,7 @@ class Session:
             return False
         return any((m := STATUS_UPDATED.match(line)) and m.group(1) == today for line in lines)
 
-    def finish(self, token_file, status_unchanged=False, today=None):
+    def finish(self, token_file, status_unchanged=False, today=None, keep_turn=False):
         token = read_token(token_file)
         if token is None or not token_matches(self.editing.current(), token_file):
             raise ValueError("この会話は編集権を持っていません。")
@@ -154,7 +158,11 @@ class Session:
                 raise ValueError("案件の STATUS.md 冒頭の「更新」行が今日ではありません。記録を更新してから終えてください。"
                                  "状態が変わらない作業なら --status-unchanged を付けてください。")
             notes.append("案件の STATUS.md を更新していません（--status-unchanged）。")
-        self.editing.release(token)
+        note = self.editing.release(token, complete_turn=not keep_turn)
+        if note:
+            notes.append(note)
+        elif keep_turn:
+            notes.append("作業の途中として終えました（--keep-turn）。担当予定は入れ替えていません。")
         try:
             Path(token_file).unlink()
         except OSError as error:

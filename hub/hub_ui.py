@@ -4,11 +4,13 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from case_editing import CaseEditing
-from case_guide import (DEFAULT_PLAN, ROLE_PLANS, draft_from_text, load_case_draft,
+from case_guide import (DEFAULT_ALTERNATE, DEFAULT_PLAN, ROLE_PLANS, draft_from_text, load_case_draft,
                         next_step, plan_label, start_instruction)
 from workspace_hub import CaseStore
 
 PLAN_BY_LABEL = {plan_label(plan): plan for plan in ROLE_PLANS}
+# 交互の意味をチェックボックスの横に短く常に出す（docs/DESIGN.md 原則4）。
+ALTERNATE_TEXT = "交互（作業を終えるたびに実装とレビューを入れ替え）"
 FONT = "Yu Gothic UI"
 
 # Colours follow docs/DESIGN.md (contrast checked: text 4.5:1, borders 3:1).
@@ -86,6 +88,8 @@ class NewCaseDialog:
         plans.pack(fill="x")
         for plan in ROLE_PLANS:
             ttk.Radiobutton(plans, text=plan_label(plan), value=plan, variable=self.plan).pack(side="left", padx=(0, 12))
+        self.alternate = tk.BooleanVar(value=DEFAULT_ALTERNATE)
+        ttk.Checkbutton(bottom, text=ALTERNATE_TEXT, variable=self.alternate).pack(anchor="w", pady=(4, 0))
         footer = ttk.Frame(bottom)
         footer.pack(fill="x", pady=(8, 0))
         self.create_button = ttk.Button(footer, text="作業場所を作成", command=self.create)
@@ -166,7 +170,8 @@ class NewCaseDialog:
             messagebox.showinfo("未保存の内容", f"先に現在の案件の{pending}を保存するか、元に戻してください。", parent=self.dialog)
             return None
         try:
-            task = hub.store.create(*self.values(), plan=self.plan.get(), draft_id=self.draft_id)
+            task = hub.store.create(*self.values(), plan=self.plan.get(), draft_id=self.draft_id,
+                                    alternate=self.alternate.get())
         except (OSError, ValueError) as error:
             messagebox.showerror("案件を作成できません", str(error), parent=self.dialog)
             return None
@@ -205,6 +210,8 @@ class Hub:
         style.configure("TFrame", background=BG)
         style.configure("TLabel", background=BG, foreground=TEXT, font=(FONT, 10))
         style.configure("TRadiobutton", background=BG, font=(FONT, 10))
+        style.configure("TCheckbutton", background=BG, foreground=TEXT, font=(FONT, 10))
+        style.map("TCheckbutton", background=[("active", BG), ("disabled", BG)])
         style.configure("TButton", font=(FONT, 10), padding=(10, 5))
         # One primary button at a time: the one the "next step" asks for.
         style.configure("Primary.TButton", font=(FONT, 10, "bold"), padding=(12, 5),
@@ -219,6 +226,8 @@ class Hub:
         style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1, bordercolor=BORDER)
         style.configure("Plain.TFrame", background="#ffffff", borderwidth=0)
         style.configure("Card.TLabel", background="#ffffff", foreground=TEXT, font=(FONT, 10))
+        style.configure("Card.TCheckbutton", background="#ffffff", foreground=TEXT, font=(FONT, 10))
+        style.map("Card.TCheckbutton", background=[("active", "#ffffff"), ("disabled", "#ffffff")])
         style.configure("Next.TLabel", background="#ffffff", foreground="#0b4f8a", font=(FONT, 11, "bold"))
         for name in ("TEntry", "TCombobox"):
             style.configure(name, bordercolor=BORDER)
@@ -289,6 +298,10 @@ class Hub:
                                      values=list(PLAN_BY_LABEL), width=32, font=(FONT, 10))
         self.role_box.pack(side="left", padx=(8, 6))
         self.role_box.bind("<<ComboboxSelected>>", lambda _event: self.update_role_state())
+        self.role_alternate = tk.BooleanVar(value=False)
+        self.role_alternate_box = ttk.Checkbutton(role_row, text="交互", variable=self.role_alternate, state="disabled",
+                                                  command=self.update_role_state, style="Card.TCheckbutton")
+        self.role_alternate_box.pack(side="left", padx=(0, 6))
         self.role_save = ttk.Button(role_row, text="保存", command=self.save_roles, state="disabled")
         self.role_save.pack(side="left")
         self.role_state = tk.StringVar(value="")
@@ -350,7 +363,8 @@ class Hub:
         return PLAN_BY_LABEL.get(self.role_choice.get())
 
     def role_dirty(self):
-        return bool(self.roles) and self.chosen_plan() != self.roles["plan"]
+        return bool(self.roles) and (self.chosen_plan() != self.roles["plan"]
+                                     or self.role_alternate.get() != self.roles["alternate"])
 
     def update_role_state(self):
         if not self.roles:
@@ -372,7 +386,9 @@ class Hub:
     def load_roles(self, case_id):
         self.roles = self.store.roles(case_id)
         self.role_choice.set(plan_label(self.roles["plan"]))
+        self.role_alternate.set(self.roles["alternate"])
         self.role_box.configure(state="readonly")
+        self.role_alternate_box.configure(state="normal")
         if self.roles["warning"]:
             self.notice.set(self.roles["warning"])
         self.update_role_state()
@@ -382,8 +398,9 @@ class Hub:
         if not self.selected or not self.roles or plan is None:
             return
         try:
-            self.roles = self.store.set_roles(self.selected, plan, self.roles["revision"])
-            self.notice.set(f"担当予定を「{plan_label(plan)}」で保存しました。編集権は変わりません。")
+            alternate = self.role_alternate.get()
+            self.roles = self.store.set_roles(self.selected, plan, self.roles["revision"], alternate)
+            self.notice.set(f"担当予定を「{plan_label(plan, alternate)}」で保存しました。編集権は変わりません。")
         except (OSError, ValueError) as error:
             self.report_error(error)
             try:
@@ -392,6 +409,21 @@ class Hub:
                 pass
         self.update_role_state()
         self.update_work_controls()
+
+    def reload_rotated_roles(self):
+        """Show a plan swapped by an AI's finish (交互) without touching unsaved choices."""
+        if not self.selected or not self.roles or self.role_dirty():
+            return
+        try:
+            latest = self.store.roles(self.selected)
+        except (OSError, ValueError):
+            return
+        if latest["revision"] != self.roles["revision"]:
+            before = self.roles["plan"]
+            self.load_roles(self.selected)
+            self.update_work_controls()
+            if latest["saved"] and latest["alternate"] and latest["plan"] != before:
+                self.notice.set(f"交互で担当予定が入れ替わりました：{plan_label(latest['plan'], True)}")
 
     # --- work state / summary ------------------------------------------
     def fit_heading(self):
@@ -404,6 +436,7 @@ class Hub:
         try:
             self.update_work_controls()
             self.update_list_states()
+            self.reload_rotated_roles()
         finally:  # an unexpected error must not stop polling for good
             self.window.after(1500, self.poll_work)
 
@@ -555,6 +588,7 @@ class Hub:
                 self.selected = None
                 self.roles = None
                 self.role_box.configure(state="disabled")
+                self.role_alternate_box.configure(state="disabled")
                 self.update_role_state()
                 self.update_work_controls()
                 self.heading.set("最初の案件を作成してください")
@@ -597,7 +631,7 @@ class Hub:
                 edit_status = f"{owner['agent']}（{owner['since']}）\n編集権ID: {owner['claim_id']}" if owner else "空き"
             except (OSError, ValueError) as error:
                 edit_status = f"要確認（{error}）"
-            self.display("status", f"担当予定: {plan_label(self.roles['plan'])}\n編集権: {edit_status}\n\n" + status)
+            self.display("status", f"担当予定: {plan_label(self.roles['plan'], self.roles['alternate'])}\n編集権: {edit_status}\n\n" + status)
             comment_text = []
             for entry in comments:
                 item = f"{entry['application']}\n{entry['created_at']}\nID: {entry['id']}\n\n{entry['message']}"

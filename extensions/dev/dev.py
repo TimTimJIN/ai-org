@@ -5,7 +5,7 @@
    "status_files": ["STATUS.md"], "check": ["powershell", "-NoProfile", "-File", "tools/check.ps1"]}
 
 コマンド：
-  python dev.py finish --project <パス> --token-file <パス> [--status-unchanged] [--case-status-unchanged]
+  python dev.py finish --project <パス> --token-file <パス> [--status-unchanged] [--case-status-unchanged] [--keep-turn]
                        [--skip-check] [--allow-dirty]
       編集権の照合 → 検証コマンド → リポジトリの STATUS → 未コミット → 中核の finish（案件の STATUS・release）
   python dev.py register --project <パス> --case <案件ID> --token-file <パス> [--status-file …] [--check-json …]
@@ -182,7 +182,7 @@ def cmd_finish(args):
         ahead = [l for l in git(project, "log", "--oneline", "@{u}..HEAD").stdout.splitlines() if l.strip()]
         if ahead:
             notes.append(f"未 push のコミットが {len(ahead)} 件あります。push は利用者の承認を得てから行います。")
-    notes += session.finish(args.token_file, args.case_status_unchanged)
+    notes += session.finish(args.token_file, args.case_status_unchanged, keep_turn=args.keep_turn)
     for note in notes:
         print(f"[ai-org] 注意：{note}")
     print("[ai-org] 編集権を返し、トークンファイルを消しました。")
@@ -399,6 +399,8 @@ def main(argv=None):
     f.add_argument("--token-file", default=os.environ.get("AI_ORG_TOKEN_FILE") or None)
     f.add_argument("--status-unchanged", action="store_true", help="リポジトリの STATUS の確認を省く")
     f.add_argument("--case-status-unchanged", action="store_true", help="案件の STATUS の確認を省く")
+    f.add_argument("--keep-turn", action="store_true",
+                   help="作業の途中で会話を終えるとき。交互の担当予定（実装・レビュー）を入れ替えない")
     f.add_argument("--skip-check", action="store_true")
     f.add_argument("--allow-dirty", action="store_true")
     g = sub.add_parser("git-guard")

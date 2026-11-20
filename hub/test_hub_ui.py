@@ -163,6 +163,35 @@ class HubUiTests(unittest.TestCase):
         self.assertEqual(self.store.roles(task["id"])["plan"], "codex-implements")
         CaseEditing(self.store, task["id"]).release(token)
 
+    def test_alternate_checkbox_saves_and_screen_follows_swap(self):
+        hub = Hub(self.root, self.store)
+        dialog = hub.new_case()
+        dialog.title.insert(0, "交互")
+        dialog.objective.insert("1.0", "目的")
+        self.assertTrue(dialog.alternate.get())  # 新しい案件は交互が既定
+        dialog.plan.set("claude-implements")
+        task = dialog.create()
+        self.assertTrue(self.store.roles(task["id"])["alternate"])
+        self.assertTrue(hub.role_alternate.get())
+        self.assertEqual(hub.role_state.get(), "保存済み")
+        # 実装担当（Claude Code）が終えると、開いたままの画面も入れ替わった予定を表示する
+        editing = CaseEditing(self.store, task["id"])
+        note = editing.release(editing.acquire("Claude Code test"))
+        self.assertIn("次の実装担当は Codex", note)
+        hub.reload_rotated_roles()
+        self.assertEqual(hub.role_choice.get(), plan_label("codex-implements"))
+        self.assertIn("Codex", hub.next_label.get())
+        self.assertIn("入れ替わりました", hub.notice.get())
+        # チェックを外して保存すると、交互をやめる
+        hub.role_alternate.set(False)
+        hub.update_role_state()
+        self.assertTrue(hub.role_dirty())
+        hub.reload_rotated_roles()  # 未保存の選択は自動更新で消さない
+        self.assertFalse(hub.role_alternate.get())
+        hub.save_roles()
+        self.assertFalse(self.store.roles(task["id"])["alternate"])
+        self.assertFalse(hub.role_dirty())
+
     def test_reviewer_instruction_requires_chosen_review_id(self):
         task = self.store.create("A", "目的")
         hub = Hub(self.root, self.store)

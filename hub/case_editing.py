@@ -77,12 +77,26 @@ class CaseEditing:
             raise ValueError("この作業の編集権を確認できません。")
         return owner
 
-    def release(self, token):
+    def release(self, token, complete_turn=True):
+        """Return the edit claim. With `complete_turn`, an alternating role plan
+        is swapped (see CaseStore.rotate_roles); returns a note or None.
+
+        Every path that ends a turn (ai_org.py finish, dev.py finish,
+        workspace_hub.py release) comes here, so Codex and Claude Code get the
+        same rotation.
+        """
         with self.guard():
-            self.require_owner(token)
+            owner = self.require_owner(token)
             if self.control_view()["phase"] == "pending":
                 raise ValueError("編集権を返す前に、書き込みを止めて停止を報告してください。")
             self.owner.unlink()
+            if not complete_turn:
+                return None
+            try:
+                return self.store.rotate_roles(self.case_id, owner["agent"])
+            except (OSError, ValueError) as error:
+                # The claim is already returned; never leave it held because of the plan.
+                return f"交互：担当予定を入れ替えられませんでした（{error}）。案件画面で確認してください。"
 
     def work_control(self):
         from workspace_hub import RECORD_ID, bounded_text

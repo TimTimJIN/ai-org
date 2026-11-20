@@ -44,16 +44,17 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 
 | いつ | コマンド（`python ai_org.py …`） |
 | --- | --- |
-| 作業の前 | `start --case <案件ID> --agent "<担当とセッション名>" [--token-file <パス>]`：停止中・他の会話が保持中なら止まる。claim し、再開済みの案件なら方針確認を記録し、方針を表示する |
+| 作業の前 | `start --case <案件ID> --agent "<担当とセッション名>" [--token-file <パス>]`：停止中・他の会話が保持中なら止まる。claim し、再開済みの案件なら方針確認を記録し、方針と担当予定（今回の実装担当・レビュー担当）を表示する。担当予定でレビュー担当になっている AI が start すると注意を出す（止めはしない） |
 | 途中 | `status --case <案件ID> [--token-file <パス>]` |
 | 停止要求が出たとき | `pause-ack --case <案件ID> --token-file <パス>` |
-| 作業の後 | `finish --case <案件ID> --token-file <パス>`：案件の STATUS.md 冒頭の「更新」行が今日でなければ止まる（`--status-unchanged` で省略可）。release してトークンを消す |
+| 作業の後 | `finish --case <案件ID> --token-file <パス>`：案件の STATUS.md 冒頭の「更新」行が今日でなければ止まる（`--status-unchanged` で省略可）。release してトークンを消す。担当予定が「交互」なら、実装担当が終えたときに実装とレビューを入れ替える（作業の途中で会話を終えるだけなら `--keep-turn`） |
 | 確認だけ | `guard --case <案件ID> --token-file <パス>`：書き込んでよければ 0、だめなら 1 |
 | 写しを作る | `report [--out <ファイル>]`：全案件の状態・編集権・担当予定・STATUS の更新日・レビュー記録の数を Markdown の表にする。Notion・Drive への反映は、利用者の指示を受けた担当がこの出力を使って行う（コマンド自体は外部に書き込まない。トークンやログは含めない） |
 
 - Claude Code は、`--token-file` に会話用の一時フォルダー（scratchpad）の `ai-org-<案件ID>.token` を指定する（編集前フックがそこを探す）。
 - Codex など：`--token-file` を省くと、一時フォルダーの `ai-org\` に一意の名前で作られ、パスが表示される。それを会話の中だけで保持する。
-- 担当名は、会話を区別できるよう識別子を含める（例：`Claude Code ai-org ea39bc9a`）。
+- 担当名は、会話を区別できるよう識別子を含める（例：`Claude Code ai-org ea39bc9a`）。交互の入れ替えは担当名の先頭の「Codex」「Claude」で実装担当を見分けるので、担当名はこのどちらかで始める。
+- 交互（担当予定）：Codex・Claude Code のどちらから操作しても同じになるよう、入れ替えは中核の release（`ai_org.py finish`、`dev.py finish`、`workspace_hub.py release` が共通に通る）で行う。実装担当が編集権を返したときだけ入れ替え、レビュー担当・見分けられない担当名・`--keep-turn`・ROLES.json が読めないときは入れ替えない（編集権は必ず返す）。レビューは編集権を返す前に受ける。新しい案件は交互が既定で、既存の案件は案件画面の「交互」にチェックを入れて保存する。recover（異常終了した会話の編集権の復旧）では入れ替えない。交互に対応していない旧版（v0.2.2 まで）は、finish で入れ替えず、画面で担当予定を保存すると交互の設定を消す。版を切り替えるときは、Codex・Claude Code・案件画面の使う版を同時に切り替える。
 
 ## 開発向けの拡張（extensions/dev）
 
@@ -75,7 +76,7 @@ Claude・Codex・ChatGPT などのAIが、役割を分けて同じ仕事を進�
 - Claude Code の編集前フック：PreToolUse（Edit／Write／NotebookEdit）で `python <使う版>/extensions/dev/dev.py claude-guard` を呼ぶ。設定では `"command": "python"`、`"args": [<dev.py のパス>, "claude-guard"]`、`"onFailure": "block"` とし、フック自体が動かないときも止める（`onFailure` に対応した Claude Code の版が必要）。
   - 案件と結び付いたリポジトリと案件フォルダーへの書き込みを、その会話が編集権を持つときだけ許す。案件フォルダーは、データフォルダーの設定に頼らず `…\cases\case-<32桁>\` の形で見分ける。`\\?\` や `\\localhost\C$\` の形のパスも通常の形に直してから判定する。
   - サブエージェントの書き込み、ROLES.json と `.editing` への書き込みは常に止める。想定外のエラーでも止める。
-- 終了：`python <使う版>/extensions/dev/dev.py finish --project <リポジトリ> --token-file <パス>`。編集権の照合 → 検証コマンド（30分で打ち切り）→ リポジトリの STATUS（`--status-unchanged` で省略）→ 未コミット → 中核の finish（案件の STATUS は `--case-status-unchanged` で省略）。
+- 終了：`python <使う版>/extensions/dev/dev.py finish --project <リポジトリ> --token-file <パス>`。編集権の照合 → 検証コマンド（30分で打ち切り）→ リポジトリの STATUS（`--status-unchanged` で省略）→ 未コミット → 中核の finish（案件の STATUS は `--case-status-unchanged` で省略、交互の入れ替えを保つなら `--keep-turn`）。
 
 ### 必須化（利用者の設定）
 

@@ -75,6 +75,8 @@ def build_report(store=None, now=None, include_status=False):
         try:
             roles = json.loads(read_inside(folder, "ROLES.json") or "")
             planned = f"実装 {roles.get('implementer', '?')}／レビュー {roles.get('reviewer', '?')}"
+            if roles.get("alternate") is True:
+                planned += "（交互）"
         except (ValueError, AttributeError):
             planned = "未設定"
         reviews = len(list((folder / "reviews").glob("*.json"))) if (folder / "reviews").is_dir() else 0
